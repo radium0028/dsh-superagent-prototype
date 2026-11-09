@@ -22,6 +22,7 @@ import { IM_WORDS, NOTE_WORDS, checkedImText } from '../src/infra/text.ts'
 import { SettingsSchema } from '../src/policy.ts'
 import { feishuKind, feishuTrigger } from '../src/sources/feishu.ts'
 import { githubKind } from '../src/sources/github.ts'
+import { gitlabKind } from '../src/sources/gitlab.ts'
 import { testMachine } from './fixtures/deployment.ts'
 
 type Role = 'orchestrator' | 'worker'
@@ -69,8 +70,8 @@ const words = (count: number) => Array.from({ length: count }, () => 'word').joi
 /** Start a configured Runtime on a fake DSH host (as in tests/runtime.spec.ts) that records registered tools, prompts, skills, and delivered messages per session. */
 async function start() {
   const directory = mkdtempSync(join(tmpdir(), 'model-surface-'))
-  const AGENT = join(directory, 'agent-gh'), BOT = join(directory, 'lark-bot')
-  for (const cli of [AGENT, BOT]) writeFileSync(cli, '#!/bin/sh\n', { mode: 0o755 })
+  const AGENT = join(directory, 'agent-gh'), BOT = join(directory, 'lark-bot'), GLAB = join(directory, 'agent-glab')
+  for (const cli of [AGENT, BOT, GLAB]) writeFileSync(cli, '#!/bin/sh\n', { mode: 0o755 })
   const repository = { default_branch: 'master', permissions: { push: true } }
   vi.spyOn(Commands.prototype, 'gh').mockImplementation(async args => args[1] === 'user' ? { login: 'agent-bot' } : repository)
   vi.spyOn(Commands.prototype, 'lark').mockResolvedValue({ users: [{ member_id: MEMBER, name: 'Alice' }], has_more: false })
@@ -85,6 +86,9 @@ async function start() {
     [`${BOT} config strict-mode`]: 'strict-mode: bot (source: profile)',
     [`${BOT} api GET /open-apis/bot/v3/info --as bot --format ndjson`]: '{"bot":{"open_id":"ou_bot"},"code":0,"msg":"ok"}',
     ['git config -z --show-origin --get-all credential.https://github.com.helper']: `file:${workerGitConfig(directory)}\0${credentialHelper(AGENT)}\0`,
+    [`${GLAB} api user --hostname gitlab.example.com`]: '{"id":9,"username":"glab-bot","commit_email":"glab-bot@example.com"}',
+    [`${GLAB} api projects/group%2Fproj --hostname gitlab.example.com --jq {path: .path_with_namespace, level: ((.permissions.project_access.access_level // .permissions.group_access.access_level) // 0)}`]: '{"path":"group/proj","level":30}\n',
+    ['git config -z --show-origin --get-all credential.https://gitlab.example.com.helper']: `file:${workerGitConfig(directory)}\0${credentialHelper(GLAB)}\0`,
     ['git config -z --show-scope --get-regexp ^(credential\\..*|http\\..*extraheader)$']:
       `global\0credential.helper\n\0global\0credential.https://github.com.helper\n${credentialHelper(AGENT)}\0`,
   }
@@ -138,11 +142,12 @@ async function start() {
   for (const [name, service] of Object.entries(services)) ctx.reflect.provide(name, service)
   const seed = new Store(join(directory, 'orchestrator.sqlite'))
   const github = { enabled: true, config: { repository: 'acme/widgets', cli: AGENT } }
-  seed.saveSettings(SettingsSchema.parse({ ...seed.settings(), sources: { github, feishu: { enabled: true, config: { cli: BOT } } } }))
+  const gitlab = { enabled: true, config: { host: 'gitlab.example.com', project: 'group/proj', cli: GLAB } }
+  seed.saveSettings(SettingsSchema.parse({ ...seed.settings(), sources: { github, gitlab, feishu: { enabled: true, config: { cli: BOT } } } }))
   seed.close()
   const runtime = new Runtime(ctx, testMachine({ stateDir: directory }), () => {})
   await runtime.ready
-  runtime.sources.register(feishuKind); runtime.sources.register(githubKind)
+  runtime.sources.register(feishuKind); runtime.sources.register(githubKind); runtime.sources.register(gitlabKind)
   const settings = runtime.store.settings()
   const allowed = { feishu: { allowed: [{ id: MEMBER, name: 'Alice' }], syncChat: CHAT }, github: { allowed: [{ id: 'alice' }] } }
   const feishuSource = { enabled: true, config: { cli: BOT, chats: [{ chatId: CHAT, listen: 'all' }], directMessages: true } }
@@ -326,7 +331,7 @@ function failures(): Map<string, string> {
       if (word!.split('/').some(part => REPORT_WORDS.test(part)) && !(TICKET_STATES as readonly string[]).includes(word!)) fail(`"${phrase}" is not a card state`)
     }
     for (const [phrase] of text.matchAll(/\bwait(?:ing)? for (?:ready|waiting|blocked|failed)\b(?! report)/g)) fail(`"${phrase}" names a report state without report`)
-    for (const [found] of text.matchAll(/\b(?:ticket|trigger|decision|prompts|prompt-preview|models|feishu|github)\/[^\s"'`,;)\]]*/g)) {
+    for (const [found] of text.matchAll(/\b(?:ticket|trigger|decision|prompts|prompt-preview|models|feishu|github|gitlab)\/[^\s"'`,;)\]]*/g)) {
       const name = found.replace(/[.:]+$/, '')
       if (!RESOURCE_NAMES.some(pattern => pattern.test(name))) fail(`${name} is not a resource orchestrator_read reads`)
     }
