@@ -1,7 +1,7 @@
 /** Structured startup and configuration errors with the settings location where the operator can fix them. */
 import { fill } from './infra/text.ts'
 
-export type SetupPlace = 'deployment' | 'github' | 'feishu'
+export type SetupPlace = 'deployment' | 'github' | 'feishu' | 'gitlab'
 export const SETUP_PROBLEMS = {
   foreignFile: ['deployment', '{file} was not written by dsh-superagent; move it, or choose another state directory.'],
   gitTooOld: ['deployment', 'git does not read the github.com credential configuration dsh-superagent writes; dsh-superagent needs git 2.32 or later.'],
@@ -19,6 +19,16 @@ export const SETUP_PROBLEMS = {
   feishuBotNotReady: ['feishu', 'The bot identity of app {app} is {status}; configure the app secret with lark-cli.'],
   feishuUserIdentity: ['feishu', 'The bot lark-cli allows user identities (strict mode {mode}); give the bot its own lark-cli configuration in strict mode bot, as docs/006-deployment.md describes.'],
   feishuNoBot: ['feishu', 'The Feishu bot API did not return the bot\'s open_id.'],
+  gitlabHostUnset: ['gitlab', 'The GitLab Source names no instance host.'],
+  gitlabAgentCliUnset: ['gitlab', 'The agent GitLab CLI is not set.'],
+  gitlabAgentCliMissing: ['gitlab', 'The agent GitLab CLI was not found.'],
+  gitlabAgentCliSignedOut: ['gitlab', 'The agent GitLab CLI cannot read its account.'],
+  gitlabAgentCliNoAccount: ['gitlab', 'The agent GitLab CLI did not report a GitLab account.'],
+  gitlabProjectUnset: ['gitlab', 'The GitLab Source names no execution project.'],
+  gitlabProjectUnreadable: ['gitlab', '@{account} cannot read {repository} on {host}.'],
+  gitlabProjectUnreported: ['gitlab', 'The agent GitLab CLI did not return {repository}.'],
+  gitlabProjectReadOnly: ['gitlab', '@{account} cannot push to {repository} on {host}.'],
+  gitlabWatchUnreadable: ['gitlab', '@{account} cannot read the watched project {repository} on {host}.'],
 } as const satisfies Record<string, readonly [SetupPlace, string]>
 export type SetupCode = keyof typeof SETUP_PROBLEMS
 export interface SetupProblem { place: SetupPlace; code: SetupCode; values: Record<string, string>; detail: string }
