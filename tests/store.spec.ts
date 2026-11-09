@@ -144,6 +144,15 @@ it('spells every kv key in KV alone, so each record is named by its entry there'
   expect(spelled).toEqual([])
 })
 
+it('builds GitLab Source KV keys by joining each family prefix with its name parts', () => {
+  expect(KV.gitlab).toBeDefined()
+  expect([KV.gitlab.since('g/p'), KV.gitlab.cursor('g/p', 'issue', 12), KV.gitlab.retries,
+    KV.gitlab.branchCi('g/p'), KV.gitlab.pipeline('g/p', 34)])
+    .toEqual(['gitlab-since:g/p', 'gitlab-cursor:g/p:issue:12', 'gitlab-retry', 'gitlab-branch-ci:g/p', 'gitlab-pipeline:g/p:34'])
+  expect([KV.gitlab.since.prefix, KV.gitlab.cursor.prefix, KV.gitlab.branchCi.prefix, KV.gitlab.pipeline.prefix])
+    .toEqual(['gitlab-since:', 'gitlab-cursor:', 'gitlab-branch-ci:', 'gitlab-pipeline:'])
+})
+
 it('runs what waits for a commit once the outermost transaction commits, and never what a rolled back one queued', () => {
   const store = new Store(join(directory, 'orchestrator.sqlite'))
   const ran: string[] = []
