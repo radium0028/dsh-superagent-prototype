@@ -18,6 +18,9 @@ export function family<V, A extends unknown[] = [string]>(prefix: string, format
   return Object.assign((...name: A) => `${prefix}${format(...name)}` as Key<V>, { prefix })
 }
 
+/** GitLab Source retry record for a failed thread read; `thread` is the full thread key. */
+export interface GitlabRetry { thread: string; since: string; failedAt?: string; attempts?: number }
+
 export const KV = {
   /** Store: current database schema version. */
   store: { schema: record<number>('schema') },
@@ -55,4 +58,14 @@ export const KV = {
   feishu: { chats: record<Record<string, boolean>>('feishu-chats'), history: family<string, [chat: string]>('feishu-history:'),
     topics: family<Record<string, string>, [chat: string]>('feishu-history-threads:'),
     seen: family<string[], [thread: string]>('thread-seen:'), initialized: family<boolean, [thread: string]>('thread-initialized:') },
+  /**
+   * GitLab Source: per-project issue/MR list-stream cursor; per-thread notes cursor by project, kind, and iid; retry
+   * records for failed thread reads, keyed by thread key; default-branch pipeline baseline; and per-MR pipeline
+   * fingerprint and revision (`revision` counts reported CI changes so each produces a distinct Trigger ID).
+   */
+  gitlab: { since: family<{ issues: string; mrs: string }, [project: string]>('gitlab-since:'),
+    cursor: family<string, [project: string, kind: string, iid: number]>('gitlab-cursor:'),
+    retries: record<Record<string, GitlabRetry>>('gitlab-retry'),
+    branchCi: family<{ branch?: string; failures?: string[]; revision: number }, [project: string]>('gitlab-branch-ci:'),
+    pipeline: family<{ fingerprint: string; revision: number }, [project: string, iid: number]>('gitlab-pipeline:') },
 }
