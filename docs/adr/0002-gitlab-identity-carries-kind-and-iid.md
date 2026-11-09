@@ -1,0 +1,3 @@
+# GitLab identity carries kind and IID
+
+GitLab numbers Issues and Merge Requests in two independent, project-scoped IID spaces, and one deployment watches several Projects — a bare number like GitHub's `github:42` cannot identify a thread. We therefore key threads as `gitlab:<project-path>#<iid>` for Issues, `gitlab:<project-path>!<iid>` for Merge Requests (GitLab's own `#`/`!` conventions), and `gitlab:<project-path>:ci:<ref>` for default-branch pipelines. Triggers deduplicate on GitLab's global numeric ids (`note.id`, `issue.id`) instead of IIDs, because only those are unique across projects and kinds.
