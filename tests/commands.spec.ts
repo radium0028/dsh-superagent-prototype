@@ -160,6 +160,43 @@ describe('GitHub calls', () => {
     await expect(value.pages(z.looseObject({ id: z.number() }), 'issues/12/comments')).rejects.toThrow()
   })
 })
+describe('GitLab calls', () => {
+  const gitlab = { cli: '/path/agent-glab', host: 'gitlab.example.com', login: 'agent', email: 'agent@example.com', project: 'group/proj', projects: ['group/proj'] }
+  const gitlabDeployment = { ...testDeployment(), gitlab }
+  const commands = () => new Commands(() => gitlabDeployment, {}, new AbortController().signal)
+  it('go only to projects/ API paths on the configured host, and validate what GitLab answers', async () => {
+    const value = commands()
+    const run = vi.spyOn(value, 'run').mockResolvedValue('{"id":7,"username":"agent"}')
+    expect(await value.gitlabApi(z.looseObject({ id: z.number() }), 'projects/g%2Fp/issues?state=all', '-f', 'state=all'))
+      .toEqual({ id: 7, username: 'agent' })
+    expect(run).toHaveBeenLastCalledWith('/path/agent-glab',
+      ['api', 'projects/g%2Fp/issues?state=all', '--hostname', 'gitlab.example.com', '-f', 'state=all'])
+    await expect(value.gitlabApi(z.looseObject({ id: z.string() }), 'projects/g%2Fp/issues?state=all')).rejects.toThrow()
+    for (const path of ['user', '/projects/x', 'projects/../x', 'projects/x/../../y', 'https://x', '']) {
+      await expect(value.gitlabApi(z.unknown(), path)).rejects.toThrow('GitLab calls are restricted to the configured projects')
+    }
+    expect(run).toHaveBeenCalledTimes(2)
+    // Without a schema, gitlabApi returns the raw CLI stdout; dots inside a path segment are no traversal.
+    run.mockResolvedValue('raw file')
+    expect(await value.gitlabApi('projects/g%2Fp/repository/files/README.md/raw?ref=main', '-H', 'Accept: application/json')).toBe('raw file')
+    expect(run).toHaveBeenLastCalledWith('/path/agent-glab',
+      ['api', 'projects/g%2Fp/repository/files/README.md/raw?ref=main', '--hostname', 'gitlab.example.com', '-H', 'Accept: application/json'])
+  })
+  it('read every ndjson page of a list, and skip lines that do not parse and count items that do not validate', async () => {
+    const value = commands()
+    const run = vi.spyOn(value, 'run').mockResolvedValue('{"id":1}\n{"id":"two"}\nnot json\n\n{"id":2}\n')
+    const tally = { skipped: 0 }
+    expect(await value.gitlabPages(z.looseObject({ id: z.number() }), 'projects/g%2Fp/issues/12/notes', tally)).toEqual([{ id: 1 }, { id: 2 }])
+    expect(run).toHaveBeenLastCalledWith('/path/agent-glab',
+      ['api', 'projects/g%2Fp/issues/12/notes', '--hostname', 'gitlab.example.com', '--paginate', '--output', 'ndjson'])
+    expect(tally).toEqual({ skipped: 1 })
+  })
+  it('refuse GitLab commands when the deployment has no GitLab CLI', async () => {
+    const value = new Commands(() => testDeployment(), {}, new AbortController().signal)
+    await expect(value.gitlabApi(z.unknown(), 'projects/g%2Fp/issues')).rejects.toThrow('The GitLab Source has no working glab CLI')
+    await expect(value.gitlabPages(z.unknown(), 'projects/g%2Fp/issues')).rejects.toThrow('The GitLab Source has no working glab CLI')
+  })
+})
 it('says how to add the bot to a chat when Feishu answers that it is not a member, and keeps the code', async () => {
   const commands = new Commands(() => deployment, {}, new AbortController().signal)
   const membership = JSON.stringify({ error: { code: 232011, message: 'operator is not in the chat' } })
