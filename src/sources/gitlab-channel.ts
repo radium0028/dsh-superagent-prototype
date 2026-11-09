@@ -1,7 +1,6 @@
 /** GitLab outbound channel: posts Issue/MR notes and discussion replies under the agent account. */
 import { z } from 'zod'
 import type { OutboundMessage } from '../core/index.ts'
-import type { Deployment } from '../deployment.ts'
 import { CliError } from '../infra/commands.ts'
 import { sameName } from '../infra/text.ts'
 import type { SourceContext } from './host.ts'
@@ -17,8 +16,7 @@ const gone = (error: unknown): boolean => error instanceof CliError
 /** Posts a note or discussion reply with an embedded HTML marker so retries do not create duplicate notes. */
 export async function sendGitlab(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'> {
   const { commands } = host
-  // `Deployment.gitlab` arrives with resolveGitlab; read it structurally so this channel compiles ahead of that type change.
-  const { gitlab } = commands.deployment as Deployment & { gitlab?: { cli: string; host: string; login: string } }
+  const { gitlab } = commands.deployment
   if (!gitlab) throw new Error('The GitLab Source has no working glab CLI')
   const address = message.channel.address
   const project = String(address.project ?? '')

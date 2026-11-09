@@ -112,8 +112,7 @@ export class Commands {
   }
   /** Resolves the GitLab source's glab CLI and instance host, refusing to run anything when the source is not configured. */
   private gitlabTarget(): { cli: string; host: string } {
-    // `Deployment.gitlab` arrives with resolveGitlab; read it structurally so this wrapper compiles ahead of that type change.
-    const gitlab = (this.deployment as Deployment & { gitlab?: { cli: string; host: string } }).gitlab
+    const gitlab = this.deployment.gitlab
     if (!gitlab) throw new Error('The GitLab Source has no working glab CLI')
     return gitlab
   }
