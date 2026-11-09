@@ -41,7 +41,9 @@ export interface SourcePolicyPart<P extends Record<string, unknown>> {
 }
 /** UI link for a channel address; `triggerId` names the Trigger whose own deep link is preferred when available. */
 export interface ChannelLink { url: string; label: Localized; triggerId?: string }
+// `Deployment.gitlab` arrives with resolveGitlab; name its shape structurally so this compiles ahead of that type change.
 export type ChannelLinks = Partial<Pick<Deployment, 'repository' | 'feishu'>>
+  & { gitlab?: { cli: string; host: string; login: string; email: string; project: string; projects: string[] } }
 /** Outbound messaging adapter for a source kind's threads. */
 export interface SourceChannel<C> {
   /** Whether a reply may still go to `address`; without it, every address may receive replies. */
