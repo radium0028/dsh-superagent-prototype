@@ -1,0 +1,17 @@
+# 09: 上线：nginx 反代 + Plane webhook 登记 + 端到端验证
+
+**What to build:** 把接收端真正暴露给 Plane：反向代理把 `/plane/webhook` 转到 superagent 的回环端口，Plane Workspace settings 登记 webhook、下载密钥、填进 Source 配置，然后一条真实评论走完 评论 → 工单 → 回复 全链路。
+
+**Blocked by:** 02、03、04、05、06、07、08
+
+**Status:** ready-for-human
+
+- [ ] nginx（或 Caddy）把 `/plane/webhook` 反代到 `127.0.0.1:3082`，HTTPS 公网可达
+- [ ] Plane 建 webhook：勾 `workitem.comment.created`（需要时加 `workitem.created`），Payload URL 为公开地址；密钥 CSV 下载后填进 Source 配置
+- [ ] 端到端：名单内成员在受监听项目评论 → 面板出现工单 → worker 回复出现在该工作项讨论串且挂在触发评论下 → 重复投递不产生重复工单或重复评论
+- [ ] 失败面验证：篡改签名回 403；未监听项目不开工单；Plane 侧除真落库失败外看不到 5xx
+- [ ] 运维需要的东西（公开 URL、项目 id、成员 id）到位，结论记入票内 Comments
+
+## Comments
+
+（待填）
