@@ -68,6 +68,17 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
 
    Both configurations share the keychain entry for the app secret. To remove only the bot configuration, delete its directory; do not run `lark-cli config remove`, which would affect the shared secret.
 
+### Plane (optional)
+
+The Plane Source receives work item comments through a workspace webhook and reads and writes Plane through the Plane MCP server. All of it is optional; the Source stays off until configured.
+
+1. Add a stdio MCP connection named `plane` in the DSH MCP connectors, with `uvx plane-mcp-server stdio` as its command (an absolute `uvx` path when the DSH process's PATH lacks one) and `PLANE_API_KEY`, `PLANE_WORKSPACE_SLUG` and `PLANE_BASE_URL` in its environment. The API key never enters dsh-superagent's settings page.
+2. Enable the `dsh-superagent-plane` entry in `cordis.patch.yml` (it ships disabled).
+3. In Plane, create a workspace webhook (Workspace settings → Webhooks) with the event `workitem.comment.created` (and `workitem.created` when the Source should open tickets on new work items), its Payload URL pointing at the public `/plane/webhook` address a reverse proxy forwards to the DSH web server, and download the signing secret CSV.
+4. In the panel's Source settings, save the webhook secret, the projects to listen to (each `mentions` or `all`), and the users who may originate work. Saving the secret restarts dsh-superagent.
+
+The setup check reports a missing secret and an unconnected MCP server; the Source's health reports the MCP connection itself. Plane's retries read the receiver's status codes: accepted deliveries (including filtered ones) answer 2xx, and only a failure to store the Trigger answers 5xx.
+
 ## Install
 
 Run this block once, on a machine that has no `superagent` profile yet:

@@ -4,8 +4,8 @@
 
 **Blocked by:** 03（事件归一化与 Trigger 管线）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] `workitem.created` 事件归一化成 Trigger：无评论、actor 取 `created_by`、Thread 与地址映射同评论事件
-- [ ] 配置开关 `workItemCreated` 默认关；关闭时该事件回 2xx 并忽略
-- [ ] 测试覆盖：开关两态、载荷形状
+- [x] `workitem.created` 事件归一化成 Trigger：无评论、actor 取 `created_by`、Thread 与地址映射同评论事件
+- [x] 配置开关 `workItemCreated` 默认关；关闭时该事件回 2xx 并忽略
+- [x] 测试覆盖：开关两态、载荷形状

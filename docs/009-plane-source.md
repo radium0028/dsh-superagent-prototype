@@ -1,6 +1,6 @@
 # 009 Plane Source：把 Plane 接入 dsh-superagent
 
-状态：设计方案，待评审，尚未实现。
+状态：已实现（integration branch `plane-source`）。触发规则 1 与网络方案 A 按原设计落地；worker 写权限待定问题 1 的取舍记录在 tickets 与 skill 文本里。
 
 运维已经定下影响代码形态的决定，见[已定决定](#已定决定)；还剩几个未定，见[待定问题](#待定问题)。
 
