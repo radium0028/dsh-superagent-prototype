@@ -55,4 +55,6 @@ export const KV = {
   feishu: { chats: record<Record<string, boolean>>('feishu-chats'), history: family<string, [chat: string]>('feishu-history:'),
     topics: family<Record<string, string>, [chat: string]>('feishu-history-threads:'),
     seen: family<string[], [thread: string]>('thread-seen:'), initialized: family<boolean, [thread: string]>('thread-initialized:') },
+  /** Plane Source: per-project last-seen comment checkpoint (the comment id of the newest observed comment), and the agent's own Plane user id. */
+  plane: { seen: family<string, [thread: string]>('plane-seen:'), self: record<string>('plane-self') },
 }

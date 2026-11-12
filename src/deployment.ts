@@ -47,15 +47,19 @@ export const GithubAccountsSchema = z.object({
   cli: z.string().trim().default(''),
 })
 export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
+export const PlaneAccountsSchema = z.object({ secret: z.string().trim().default('') })
 /** Source configuration keys that affect deployment setup and trigger a restart when changed. */
-export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape) }
+export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape),
+  feishu: Object.keys(FeishuBotSchema.shape), plane: Object.keys(PlaneAccountsSchema.shape) }
 
 export interface Deployment extends Machine {
   repository: string
   github: { cli: string; login: string; noreply: string }
   feishu?: FeishuBot
+  plane?: PlaneAccount
 }
 export interface FeishuBot { cli: string; appId: string; brand: 'feishu' | 'lark'; botId: string; name: string }
+export interface PlaneAccount { secret: string; mcpServer: string }
 
 /** Resolve a command name or absolute path to an executable file, ignoring the worker shim directory. */
 export function executable(name: string, path: string, exclude?: string): string {
@@ -128,4 +132,17 @@ export async function resolveFeishuBot(machine: Machine, feishu: unknown, probe:
   const info = parsed(BotInfo, (await run('api', 'GET', '/open-apis/bot/v3/info', '--as', 'bot', '--format', 'ndjson')).split('\n')[0] ?? '')
   if (!info) return fail(new SetupError('feishuNoBot'))
   return { cli, appId: status.appId, brand: status.brand, botId: info.bot.open_id, name: info.bot.app_name }
+}
+
+/**
+ * Verify the Plane Source's account: the webhook secret must be set and the MCP server's first tool must be
+ * registered (the mcp-client registers MCP tools process-globally, so a missing `mcp__<server>__workitem` means the
+ * connection itself is down). The API key stays in the MCP connection's env — it never enters the settings page.
+ */
+const McpServerSchema = z.string().trim().regex(/^[a-z][a-z0-9_-]*$/, 'lowercase namespace').default('plane')
+export function resolvePlane(plane: unknown, tools: { get(name: string): unknown }): PlaneAccount {
+  const { secret, mcpServer } = z.object({ secret: z.string().trim().default(''), mcpServer: McpServerSchema }).parse(plane ?? {})
+  if (!secret) throw new SetupError('planeSecretUnset')
+  if (!tools.get(`mcp__${mcpServer}__workitem`)) throw new SetupError('planeMcpUnavailable')
+  return { secret, mcpServer }
 }
