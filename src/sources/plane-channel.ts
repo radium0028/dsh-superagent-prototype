@@ -10,7 +10,7 @@ import type { OutboundMessage } from '../core/index.ts'
 import type { SourceContext } from './host.ts'
 import type { ChannelLink } from './kind.ts'
 import type { PlaneMcp } from './plane-mcp.ts'
-import { planeTriggerId, type PlaneIssueRef } from './plane-trigger.ts'
+import type { PlaneIssueRef } from './plane-trigger.ts'
 
 /** Escapes plain text and wraps it as HTML paragraphs, the format Plane renders in a comment. */
 export function planeHtml(text: string): string {
@@ -44,6 +44,5 @@ export function planeSender(mcp: () => PlaneMcp) {
 /** Work item link for cards; `host` is the Plane base URL from the MCP connection. */
 export function planeLink(address: Record<string, string>, host: string): ChannelLink {
   const ref = { projectId: address.projectId ?? '', workItemId: address.workItemId ?? '' }
-  return { url: ref.projectId && ref.workItemId ? planeWorkItemUrl(host, ref) : '',
-    label: { zh: 'Plane 工作项', en: 'Plane work item' }, ...(address.commentId ? { triggerId: planeTriggerId(address.commentId) } : {}) }
+  return { url: ref.projectId && ref.workItemId ? planeWorkItemUrl(host, ref) : '', label: { zh: 'Plane 工作项', en: 'Plane work item' } }
 }

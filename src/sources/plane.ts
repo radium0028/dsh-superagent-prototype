@@ -9,6 +9,7 @@ import { planeMcp, type PlaneMcp } from './plane-mcp.ts'
 import { planeChannel, planeTrigger, planeTriggerId, workItemTrigger } from './plane-trigger.ts'
 import { planeWebhook } from './plane-webhook.ts'
 import { sourceContext } from './host.ts'
+import type { ScopeResult } from '../core/index.ts'
 import type { Localized, SourceKind } from './kind.ts'
 import type { SourceRegistry } from './registry.ts'
 
@@ -18,7 +19,6 @@ export { planeMcp, PlaneMcpUnavailable } from './plane-mcp.ts'
 export { planeHtml, planeLink, planeSender } from './plane-channel.ts'
 export { planeThreadContext } from './plane-read.ts'
 export { planeWebhook, planeSignatureValid, MAX_BODY_BYTES } from './plane-webhook.ts'
-void planeChannel
 
 const PlaneConfigSchema = PlaneAccountsSchema.extend({
   mcpServer: z.string().trim().regex(/^[a-z][a-z0-9_-]*$/, 'lowercase namespace').default('plane'),
@@ -42,13 +42,21 @@ const planeBaseUrl = (): string => process.env.PLANE_BASE_URL ?? 'https://api.pl
  * The Plane kind. The channel and threadContext close over the MCP adapter, which the plugin entry builds from the
  * tools service — kind callbacks only receive the CLI commands port, so the factory bridges the two.
  */
+/** The receiving-scope rule, shared by the kind's `scope` and its Channel's `allowed`. */
+const planeScope = (input: { meta: Record<string, unknown> }, config: PlaneConfig): ScopeResult => {
+  const projectId = String(input.meta.projectId ?? '')
+  const project = config.projects.find(item => item.id === projectId)
+  if (!project) return { listened: false, reason: 'project_not_listed' }
+  // Rule 1: any comment by a listed member is an explicit request; the admission table decides the rest.
+  return { listened: true, observed: project.listen === 'all', row: project.id }
+}
 export function planeKind(deps: { mcp: () => ReturnType<typeof planeMcp> }): SourceKind<PlaneConfig> {
   return {
     kind: 'plane',
     title: { zh: 'Plane', en: 'Plane' },
     description: { zh: '接收 Plane 工作项的新评论，在工作项的讨论串里回复；Plane 的读写都经 MCP 服务器。', en: 'Receives new comments on Plane work items and replies in their threads; all Plane reads and writes go through the MCP server.' },
     schema: PlaneConfigSchema,
-    refreshLabels: (host, signal) => refreshPlaneNames(sourceContext(host, planeKind(deps)), deps.mcp(), signal),
+    refreshLabels: (host, signal) => refreshPlaneNames(sourceContext(host, { kind: 'plane', health: ['plane'] }), deps.mcp(), signal),
     fields: [
       { key: 'secret', type: 'text', pattern: '^plane_wh_[A-Za-z0-9]+$', label: { zh: 'webhook 密钥', en: 'Webhook secret' },
         hint: { zh: 'plane_wh_…，创建 webhook 时以 CSV 下载；改动它触发 dsh-superagent 重启。', en: 'plane_wh_…, downloaded as CSV when the webhook is created; changing it restarts dsh-superagent.' } },
@@ -64,22 +72,14 @@ export function planeKind(deps: { mcp: () => ReturnType<typeof planeMcp> }): Sou
       { key: 'readPageSize', type: 'number', advanced: true, min: 1, max: 100, label: { zh: '每页评论数', en: 'Comments per page' } },
     ],
     health: ['plane'],
-    scope({ meta }, config) {
-      const projectId = String(meta.projectId ?? '')
-      const project = config.projects.find(item => item.id === projectId)
-      if (!project) return { listened: false, reason: 'project_not_listed' }
-      // Rule 1: any comment by a listed member is an explicit request; the admission table decides the rest.
-      return { listened: true, observed: project.listen === 'all', row: project.id }
-    },
+    scope: planeScope,
     channel: {
-      allowed: (address, config) => planeKind(deps).scope!({ meta: { projectId: address.projectId ?? '' } }, config).listened,
+      allowed: (address, config) => planeScope({ meta: { projectId: address.projectId ?? '' } }, config).listened,
       send: planeSender(deps.mcp),
       link: (address) => planeLink(address, planeBaseUrl()),
     },
     threadContext: planeThreadContext({ mcp: deps.mcp }),
     find: query => ({ threads: [], terms: [...new Set(query.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi) ?? [])] }),
-    repliesTo: trigger => typeof trigger.meta.commentId === 'string' && trigger.meta.commentId
-      ? planeTriggerId(String(trigger.meta.commentId)) : undefined,
     policy: {
       unnamed: { person: { zh: 'Plane 用户', en: 'Plane user' }, bot: { zh: 'Plane 机器人', en: 'Plane bot' } },
       schema: z.object({
@@ -181,5 +181,3 @@ export function apply(ctx: Context): void {
     return async () => { controller.abort(); await running.catch(() => {}) }
   }, 'plane: member names and MCP health')
 }
-
-void planeChannel
