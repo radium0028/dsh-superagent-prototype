@@ -32,7 +32,7 @@ export function planeThreadContext(deps: PlaneReadDeps): ThreadContext<{ readPag
   const readPage = async (trigger: Trigger, cursor: string | undefined, pageSize: number) => {
     const ref = planeRef(trigger)
     if (!ref) throw new Error('A Plane source trigger is required')
-    return deps.mcp().comments(ref, cursor)
+    return deps.mcp().comments(ref, cursor, pageSize)
   }
   return {
     messageId: trigger => String(trigger.meta.commentId ?? ''),
@@ -59,4 +59,19 @@ export function planeThreadContext(deps: PlaneReadDeps): ThreadContext<{ readPag
       return { messages, next: page.nextCursor, body: { status: 'available', comments: page.items }, status: 'available' }
     },
   }
+}
+/** One `plane/<trigger-id>/…` page for the model: the issue, one comment, or a page of comments. */
+export async function readPlaneResource(mcp: PlaneMcp, ref: PlaneIssueRef & { triggerId: string }, resource: string,
+  pageSize: number): Promise<unknown> {
+  const request = planeResource(resource)
+  if (request.triggerId !== ref.triggerId) throw new Error('A Plane source trigger is required')
+  if (request.section === 'issue') return { status: 'available', issue: await mcp.workItem(ref.workItemId) }
+  const page = await mcp.comments(ref, request.cursor, pageSize)
+  if (request.section === 'comment') {
+    const comment = page.items.find(item => item.id === request.cursor) ?? (await mcp.comments(ref)).items.find(item => item.id === request.cursor)
+    if (!comment) throw new Error('The requested Plane comment is unavailable; do not infer its contents')
+    return { status: 'available', comment }
+  }
+  return { status: 'available', comments: page.items,
+    next_resource: page.nextCursor ? `plane/${ref.triggerId}/comments/${encodeURIComponent(page.nextCursor)}` : null }
 }

@@ -112,14 +112,16 @@ it('lists a ticket\'s execution environment in its prompt, and says setup is inc
   })
 })
 
-it('registers the built-in Source skills, Feishu only with a Feishu bot, before the team skills', () => {
+it('registers the built-in Source skills, Feishu and Plane only with their accounts, before the team skills', () => {
   withStore(store => {
     const config = { ...defaultPrompts(), skills: { release: 'Tag releases.' } }
     const skills = promptsOf(store).skills(config)
-    expect(skills.map(([name]) => name)).toEqual(['feishu', 'github', 'release'])
-    expect(skills[1]![1]).toContain('## CLI usage')
-    expect(skills[2]![1]).toBe('Tag releases.')
-    expect(new Prompts(store, () => 100000, variables, () => false).skills(config).map(([name]) => name)).toEqual(['github', 'release'])
+    expect(skills.map(([name]) => name)).toEqual(['feishu', 'plane', 'github', 'release'])
+    expect(skills[0]![1]).toContain('## CLI usage')
+    expect(skills[1]![1]).toContain('Plane MCP server')
+    expect(skills[3]![1]).toBe('Tag releases.')
+    expect(new Prompts(store, () => 100000, variables, () => false, () => false).skills(config).map(([name]) => name)).toEqual(['github', 'release'])
+    expect(new Prompts(store, () => 100000, variables, () => false, () => true).skills(config).map(([name]) => name)).toEqual(['plane', 'github', 'release'])
   })
 })
 

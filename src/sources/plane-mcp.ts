@@ -98,9 +98,9 @@ export function planeMcp(tools: ToolsLike, server = 'plane') {
         priority: raw.priority ?? null, description: raw.description_stripped ?? '', sequenceId: raw.sequence_id ?? null }
     },
     /** One page of a work item's comments, oldest first, with a cursor for the next page. */
-    async comments(issue: { projectId: string; workItemId: string }, cursor?: string): Promise<PlanePage<PlaneComment>> {
+    async comments(issue: { projectId: string; workItemId: string }, cursor?: string, pageSize?: number): Promise<PlanePage<PlaneComment>> {
       const page = await call('workitem_comment',
-        { action: 'list', project_id: issue.projectId, work_item_id: issue.workItemId, ...(cursor ? { cursor } : {}) }, CommentPageSchema)
+        { action: 'list', project_id: issue.projectId, work_item_id: issue.workItemId, ...(cursor ? { cursor } : {}), ...(pageSize ? { per_page: pageSize } : {}) }, CommentPageSchema)
       return { items: page.results.map(item => ({ id: item.id, html: item.comment_html ?? null, text: item.comment_stripped ?? '',
         actorId: item.actor_id ?? null, at: timestamp(item.created_at) })), nextCursor: page.next_cursor ?? undefined }
     },

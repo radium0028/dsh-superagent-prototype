@@ -5,7 +5,7 @@ import { Engine, key, type Assessor, type Executor, type Trigger } from '../src/
 import { KV } from '../src/kv.ts'
 import { apply as applyPlane, planeKind, planeSignatureValid, planeTrigger, refreshPlaneNames, workItemTrigger } from '../src/sources/plane.ts'
 import { planeHtml } from '../src/sources/plane-channel.ts'
-import { planeResource, planeThreadContext } from '../src/sources/plane-read.ts'
+import { planeResource, planeThreadContext, readPlaneResource } from '../src/sources/plane-read.ts'
 import { planeWebhook, MAX_BODY_BYTES } from '../src/sources/plane-webhook.ts'
 import { planeMcp } from '../src/sources/plane-mcp.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
@@ -258,6 +258,21 @@ describe('plane resources', () => {
     expect(planeResource('plane/t1/comments/c2')).toEqual({ triggerId: 't1', section: 'comments', cursor: 'c2' })
     expect(() => planeResource('plane/t1')).toThrow('plane/<trigger-id>/')
     expect(() => planeResource('plane/t1/issue/c1')).toThrow('plane/<trigger-id>/')
+  })
+})
+
+describe('plane read resource', () => {
+  it('reads the issue and comment pages through the MCP adapter', async () => {
+    mcpResults.set('workitem', { id: WORK_ITEM, name: '发票识别不对', project_id: PROJECT, state_id: 's1', priority: 'high',
+      description_stripped: '描述', sequence_id: 7, created_by_id: MEMBER, assignee_ids: [] })
+    mcpResults.set('workitem_comment', { results: [{ id: 'cm-1', comment_stripped: '请修一下', actor_id: MEMBER, created_at: '2026-11-12T10:00:00Z' }], next_cursor: null })
+    const mcp = planeMcp(mcpStub)
+    const ref = { projectId: PROJECT, workItemId: WORK_ITEM, triggerId: 't1' }
+    const issue = await readPlaneResource(mcp, ref, 'plane/t1/issue', 30)
+    expect(issue).toMatchObject({ status: 'available', issue: { name: '发票识别不对' } })
+    const comments = await readPlaneResource(mcp, ref, 'plane/t1/comments', 30)
+    expect(comments).toMatchObject({ status: 'available', next_resource: null })
+    expect((comments as { comments: unknown[] }).comments).toHaveLength(1)
   })
 })
 

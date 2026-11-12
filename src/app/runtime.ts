@@ -39,6 +39,7 @@ import { Outbox } from './outbox.ts'
 import { Passes } from './passes.ts'
 import { Setup } from './setup.ts'
 import { feishuSettings } from '../sources/feishu.ts'
+import { planeMcp, planeSettings } from '../sources/plane.ts'
 import { health, type Health, type SourceContext, type SourceHost } from '../sources/host.ts'
 import { Sessions } from './sessions.ts'
 import { Settings } from './settings.ts'
@@ -100,7 +101,8 @@ export class Runtime extends Service implements SourceHost {
       const deployed = () => setup.configured()
         ? environmentOf({ deployment: setup.deployment, sources: this.sources, settings: store.settings() }) : undefined
       const feishu = () => setup.configured() && !!setup.deployment.feishu
-      const prompts = this.prompts = new Prompts(store, () => machine.promptMaxChars.get(), deployed, feishu)
+      const plane = () => setup.configured() && !!setup.deployment.plane
+      const prompts = this.prompts = new Prompts(store, () => machine.promptMaxChars.get(), deployed, feishu, plane)
       const masterId = this.masterId = store.get(KV.runtime.masterId) ?? `orchestrator-${key(machine.stateDir)}`
       store.set(KV.runtime.masterId, masterId)
       const commands = this.commands = new Commands(() => setup.deployment, setup.commandEnvironment, this.lifetime)
@@ -117,7 +119,11 @@ export class Runtime extends Service implements SourceHost {
       const environment = (ticket: Ticket) => this.ticketEnvironment(ticket)
       const resources: ResourceHost = { store, pages: new TextCache(4_000_000), prompts, commands, masterId, context: ctx,
         promptVersion: id => this.sessions.promptVersion(id), mayRead: (id, revision) => this.sessions.mayRead(id, revision),
-        feishuPageSize: () => feishuSettings(sources).readPageSize, sourceLink: link }
+        feishuPageSize: () => feishuSettings(sources).readPageSize,
+        planePageSize: () => planeSettings(sources).readPageSize,
+        planeMcp: () => { const tools = ctx.get('tools') as { get(name: string): unknown } | undefined
+          return tools ? planeMcp({ get: name => tools.get(name) as never }) : undefined },
+        sourceLink: link }
       const sessions = this.sessions = new Sessions({ context: ctx, store, prompts, effects, health: board.claim('models'), masterId,
         lifetime: this.lifetime,
         closing: () => this.closing(), environment,
