@@ -2,7 +2,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createHmac } from 'node:crypto'
 import { Engine, key, type Assessor, type Executor, type Trigger } from '../src/core/index.ts'
-import { apply as applyPlane, planeKind, planeSignatureValid, planeTrigger, workItemTrigger } from '../src/sources/plane.ts'
+import { KV } from '../src/kv.ts'
+import { apply as applyPlane, planeKind, planeSignatureValid, planeTrigger, refreshPlaneNames, workItemTrigger } from '../src/sources/plane.ts'
 import { planeHtml } from '../src/sources/plane-channel.ts'
 import { planeResource, planeThreadContext } from '../src/sources/plane-read.ts'
 import { planeWebhook, MAX_BODY_BYTES } from '../src/sources/plane-webhook.ts'
@@ -257,5 +258,35 @@ describe('plane resources', () => {
     expect(planeResource('plane/t1/comments/c2')).toEqual({ triggerId: 't1', section: 'comments', cursor: 'c2' })
     expect(() => planeResource('plane/t1')).toThrow('plane/<trigger-id>/')
     expect(() => planeResource('plane/t1/issue/c1')).toThrow('plane/<trigger-id>/')
+  })
+})
+
+describe('plane member names', () => {
+  it('resolves user UUIDs to names, pages the roster, and stores them in KV', async () => {
+    mcpResults.set('member', { results: [{ member: { id: MEMBER, display_name: 'Alice' } }, { member: { id: OTHER, display_name: null } }], next_cursor: undefined })
+    const h = host()
+    const names = await refreshPlaneNames(h, planeMcp(mcpStub))
+    expect(names).toEqual({ [MEMBER]: 'Alice' })
+    expect(h.store.get(KV.sources.labels('plane'))).toEqual({ [MEMBER]: 'Alice' })
+    // The agent's own comment renders with a name once labels are stored.
+    expect(h.store.get(KV.sources.labels('plane'))?.[MEMBER]).toBe('Alice')
+  })
+  it('pages with the cursor until the roster ends', async () => {
+    mcpResults.set('member', { results: [{ member: { id: MEMBER, display_name: 'Alice' } }], next_cursor: 'c1' })
+    const h = host()
+    const mcp = planeMcp(mcpStub)
+    const originalMembers = mcp.members
+    let calls = 0
+    const paging = { ...mcp, members: async (cursor?: string) => { calls++; return calls === 1 ? { items: [{ id: MEMBER, name: 'Alice' }], nextCursor: 'c1' } : { items: [{ id: OTHER, name: 'Bob' }], nextCursor: undefined } } }
+    const names = await refreshPlaneNames(h, paging)
+    expect(calls).toBe(2)
+    expect(names).toEqual({ [MEMBER]: 'Alice', [OTHER]: 'Bob' })
+    void originalMembers
+  })
+  it('reports the MCP server as unhealthy when the tool call fails', async () => {
+    mcpResults.set('member', new Error('plane down'))
+    const h = host()
+    const context = h.context({ kind: 'plane', health: ['plane'] })
+    await expect(refreshPlaneNames(context, planeMcp(mcpStub))).rejects.toThrow('plane down')
   })
 })

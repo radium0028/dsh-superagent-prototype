@@ -2,9 +2,10 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
 import { PlaneAccountsSchema } from '../deployment.ts'
+import { KV } from '../kv.ts'
 import { planeLink, planeSender } from './plane-channel.ts'
 import { planeThreadContext } from './plane-read.ts'
-import { planeMcp } from './plane-mcp.ts'
+import { planeMcp, type PlaneMcp } from './plane-mcp.ts'
 import { planeChannel, planeTrigger, planeTriggerId, workItemTrigger } from './plane-trigger.ts'
 import { planeWebhook } from './plane-webhook.ts'
 import { sourceContext } from './host.ts'
@@ -47,6 +48,7 @@ export function planeKind(deps: { mcp: () => ReturnType<typeof planeMcp> }): Sou
     title: { zh: 'Plane', en: 'Plane' },
     description: { zh: '接收 Plane 工作项的新评论，在工作项的讨论串里回复；Plane 的读写都经 MCP 服务器。', en: 'Receives new comments on Plane work items and replies in their threads; all Plane reads and writes go through the MCP server.' },
     schema: PlaneConfigSchema,
+    refreshLabels: (host, signal) => refreshPlaneNames(sourceContext(host, planeKind(deps)), deps.mcp(), signal),
     fields: [
       { key: 'secret', type: 'text', pattern: '^plane_wh_[A-Za-z0-9]+$', label: { zh: 'webhook 密钥', en: 'Webhook secret' },
         hint: { zh: 'plane_wh_…，创建 webhook 时以 CSV 下载；改动它触发 dsh-superagent 重启。', en: 'plane_wh_…, downloaded as CSV when the webhook is created; changing it restarts dsh-superagent.' } },
@@ -116,6 +118,19 @@ export function planeKind(deps: { mcp: () => ReturnType<typeof planeMcp> }): Sou
 
 export const name = 'dsh-superagent-plane'
 export const inject = ['orchestrator', 'tools', 'webServer']
+/** Resolves Plane user UUIDs to names through the MCP member roster, stores them in KV, and returns them; also the MCP health probe. */
+export async function refreshPlaneNames(ctx: { state: { get<V>(key: import('../kv.ts').Key<V>): V | undefined; set<V>(key: import('../kv.ts').Key<V>, value: V | undefined): void } },
+  mcp: PlaneMcp, signal?: AbortSignal): Promise<Record<string, string>> {
+  const names: Record<string, string> = {}
+  let cursor: string | undefined
+  do {
+    const page = await mcp.members(cursor)
+    for (const member of page.items) if (member.name) names[member.id] = member.name
+    cursor = page.nextCursor
+  } while (cursor && !signal?.aborted)
+  ctx.state.set(KV.sources.labels('plane'), names)
+  return names
+}
 export function apply(ctx: Context): void {
   const mcp = () => planeMcp(ctx.tools, planeSettings(ctx.orchestrator.sources).mcpServer)
   const kind = planeKind({ mcp })
@@ -144,4 +159,27 @@ export function apply(ctx: Context): void {
     }
     return ctx.webServer.register({ kind: 'prefix', path: '/plane/webhook', handler })
   }, 'plane: webhook receiver')
+  // The member-name refresh doubles as the MCP health probe: a minute like Feishu's chat-name loop, and the stored
+  // names stay until a later read succeeds. A down MCP server turns the Source's health entry to error.
+  ctx.effect(() => {
+    const context = sourceContext(ctx.orchestrator, kind)
+    const controller = new AbortController()
+    const running = (async () => {
+      await context.ready
+      while (!controller.signal.aborted) {
+        if (planeSettings(ctx.orchestrator.sources).secret) {
+          try {
+            await refreshPlaneNames(context, mcp(), controller.signal)
+            context.report('plane', { state: 'ready', detail: 'Plane MCP connected', at: new Date().toISOString() })
+          } catch (error) {
+            context.report('plane', { state: 'error', detail: String(error) })
+          }
+        }
+        await new Promise<void>(resolve => { const timer = setTimeout(resolve, 60_000); controller.signal.addEventListener('abort', () => { clearTimeout(timer); resolve() }, { once: true }) })
+      }
+    })()
+    return async () => { controller.abort(); await running.catch(() => {}) }
+  }, 'plane: member names and MCP health')
 }
+
+void planeChannel
