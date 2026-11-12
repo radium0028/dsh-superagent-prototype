@@ -93,20 +93,20 @@ export function planeMcp(tools: ToolsLike, server = 'plane') {
     available(): boolean { return !!tools.get(tool('workitem')) },
     /** One work item by id; `description_stripped` is plain text. */
     async workItem(id: string): Promise<PlaneWorkItem> {
-      const raw = await call(tool('workitem'), { action: 'retrieve', work_item_id: id }, WorkItemSchema)
+      const raw = await call('workitem', { action: 'retrieve', work_item_id: id }, WorkItemSchema)
       return { id: raw.id, name: raw.name, projectId: raw.project_id ?? null, stateId: raw.state_id ?? null,
         priority: raw.priority ?? null, description: raw.description_stripped ?? '', sequenceId: raw.sequence_id ?? null }
     },
     /** One page of a work item's comments, oldest first, with a cursor for the next page. */
     async comments(issue: { projectId: string; workItemId: string }, cursor?: string): Promise<PlanePage<PlaneComment>> {
-      const page = await call(tool('workitem_comment'),
+      const page = await call('workitem_comment',
         { action: 'list', project_id: issue.projectId, work_item_id: issue.workItemId, ...(cursor ? { cursor } : {}) }, CommentPageSchema)
       return { items: page.results.map(item => ({ id: item.id, html: item.comment_html ?? null, text: item.comment_stripped ?? '',
         actorId: item.actor_id ?? null, at: timestamp(item.created_at) })), nextCursor: page.next_cursor ?? undefined }
     },
     /** Posts one reply as a comment; `externalId` makes Plane deduplicate retries of the same message. */
     async reply(issue: { projectId: string; workItemId: string }, externalId: string, html: string, parentId?: string): Promise<string> {
-      const raw = await call(tool('workitem_comment'),
+      const raw = await call('workitem_comment',
         { action: 'create', project_id: issue.projectId, work_item_id: issue.workItemId, comment_html: html,
           external_id: externalId, external_source: 'dsh-superagent', ...(parentId ? { parent_id: parentId } : {}) },
         z.looseObject({ id: z.string() }))
@@ -114,12 +114,12 @@ export function planeMcp(tools: ToolsLike, server = 'plane') {
     },
     /** The authenticated Plane user (the API key owner); its comments are the agent's own and never trigger work. */
     async me(): Promise<PlaneMember | undefined> {
-      const page = await call(tool('member'), { action: 'me' }, MemberPageSchema)
+      const page = await call('member', { action: 'me' }, MemberPageSchema)
       return page.results[0]?.member ? { id: page.results[0].member.id, name: page.results[0].member.display_name ?? null } : undefined
     },
     /** Pages of the workspace member roster; Plane user UUIDs resolve to names. */
     async members(cursor?: string): Promise<PlanePage<PlaneMember>> {
-      const page = await call(tool('member'), { action: 'list_workspace', ...(cursor ? { cursor } : {}) }, MemberPageSchema)
+      const page = await call('member', { action: 'list_workspace', ...(cursor ? { cursor } : {}) }, MemberPageSchema)
       return { items: page.results.flatMap(entry => entry.member ? [{ id: entry.member.id, name: entry.member.display_name ?? null }] : []),
         nextCursor: page.next_cursor ?? undefined }
     },
