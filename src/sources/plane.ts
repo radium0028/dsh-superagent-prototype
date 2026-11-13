@@ -201,11 +201,13 @@ export function apply(ctx: Context, deps: PlaneApplyDeps = {}): void {
     return async () => { controller.abort(); await running }
   }, 'plane: webhook receiver')
   // The member-name refresh doubles as the MCP health probe: a minute like Feishu's chat-name loop, and the stored
-  // names stay until a later read succeeds. A down MCP server turns the Source's health entry to error.
+  // names stay until a later read succeeds. A down MCP server turns the Source's health entry to error; repeated
+  // failures back off (Plane rate-limits the member list, so hammering it only prolongs the 429s).
   ctx.effect(() => {
     const controller = new AbortController()
     const running = (async () => {
       await context.ready
+      let failures = 0
       while (!controller.signal.aborted) {
         if (context.config<PlaneConfig>('plane')) {
           if (!self.id) {
@@ -214,15 +216,19 @@ export function apply(ctx: Context, deps: PlaneApplyDeps = {}): void {
           }
           try {
             await refreshPlaneNames(context, mcp(), controller.signal)
+            failures = 0
             probe.state = 'ready'; probe.detail = 'Plane MCP connected'
           } catch (error) {
+            failures += 1
             probe.state = 'error'; probe.detail = `Plane MCP unavailable: ${error instanceof Error ? error.message : String(error)}`
           }
         } else {
+          failures = 0
           probe.state = 'paused'; probe.detail = 'Off'
         }
         publish()
-        await new Promise<void>(resolve => { const timer = setTimeout(resolve, 60_000); controller.signal.addEventListener('abort', () => { clearTimeout(timer); resolve() }, { once: true }) })
+        const waitMs = Math.min(60_000 * Math.max(failures, 1), 600_000)
+        await new Promise<void>(resolve => { const timer = setTimeout(resolve, waitMs); controller.signal.addEventListener('abort', () => { clearTimeout(timer); resolve() }, { once: true }) })
       }
     })()
     return async () => { controller.abort(); await running.catch(() => {}) }
