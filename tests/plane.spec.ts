@@ -3,10 +3,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createHmac } from 'node:crypto'
 import { Engine, key, type Assessor, type Executor, type Trigger } from '../src/core/index.ts'
 import { KV } from '../src/kv.ts'
-import { apply as applyPlane, planeKind, planeSignatureValid, planeTrigger, refreshPlaneNames, workItemTrigger } from '../src/sources/plane.ts'
+import { apply as applyPlane, planeKind, planeSignatureValid, planeTrigger, PlaneConfigSchema, refreshPlaneNames, workItemTrigger, type PlaneApplyDeps } from '../src/sources/plane.ts'
 import { planeHtml } from '../src/sources/plane-channel.ts'
 import { planeResource, planeThreadContext, readPlaneResource } from '../src/sources/plane-read.ts'
-import { planeWebhook, MAX_BODY_BYTES } from '../src/sources/plane-webhook.ts'
+import { planeWebhook, startPlaneWebhook, watchPlaneWebhook, MAX_BODY_BYTES } from '../src/sources/plane-webhook.ts'
 import { planeMcp } from '../src/sources/plane-mcp.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import { Store } from '../src/app/store.ts'
@@ -16,6 +16,7 @@ import { testDeployment } from './fixtures/deployment.ts'
 import { SettingsSchema, settingsPolicy } from '../src/policy.ts'
 import { sourceContextOf, type SourceContextDeps } from '../src/app/source-context.ts'
 import { mkdtempSync } from 'node:fs'
+import { request as httpRequest } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -161,11 +162,10 @@ describe('plane webhook', () => {
 describe('plane scope', () => {
   it('listens to listed projects and filters unlisted ones with a reason', () => {
     const kind = planeKind({ mcp: () => planeMcp(mcpStub) })
-    const config = { secret: '', mcpServer: 'plane', readPageSize: 30, workItemCreated: false,
-      projects: [{ id: PROJECT, listen: 'all' as const }] }
+    const config = PlaneConfigSchema.parse({ projects: [{ id: PROJECT, listen: 'all' }] })
     expect(kind.scope!({ meta: { projectId: PROJECT } }, config)).toMatchObject({ listened: true, observed: true, row: PROJECT })
     expect(kind.scope!({ meta: { projectId: '00000000-0000-0000-0000-000000000000' } }, config)).toMatchObject({ listened: false, reason: 'project_not_listed' })
-    expect(kind.scope!({ meta: { projectId: PROJECT } }, { ...config, projects: [{ id: PROJECT, listen: 'mentions' }] }))
+    expect(kind.scope!({ meta: { projectId: PROJECT } }, PlaneConfigSchema.parse({ projects: [{ id: PROJECT, listen: 'mentions' }] })))
       .toMatchObject({ listened: true, observed: false })
   })
 })
@@ -220,23 +220,97 @@ describe('plane thread context', () => {
 })
 
 describe('plane plugin', () => {
-  it('registers the kind and the webhook route, and releases both', async () => {
-    const routes: { path: string; handler: unknown }[] = []
-    // An empty registry so the plugin's own registration shows (the standard host() already holds the kind).
-    const board = new HealthBoard()
-    const store = new Store(join(mkdtempSync(join(tmpdir(), 'plane-plugin-')), 'db.sqlite'))
-    const sources = new SourceRegistry(() => store.settings(), board)
-    const engine = { receive: vi.fn() }
-    const ctx = { orchestrator: { sources, context: () => ({ receive: engine.receive }) }, tools: mcpStub,
-      webServer: { register: (route: { path: string; handler: unknown }) => { routes.push(route); return () => {} } },
-      effect: (effect: () => () => unknown) => { disposers.push(effect()) } }
+  /**
+   * A cordis-like context whose effects run at once. The start wrapper binds real OS-assigned sockets and records
+   * their ports so the test can POST to the receiver; the orchestrator view is a hand-rolled context stub.
+   */
+  const fakeContext = (config: Record<string, unknown>) => {
     const disposers: (() => unknown)[] = []
-    applyPlane(ctx as never)
+    const state = new Map<string, unknown>()
+    const reports: { state: string; detail: string }[] = []
+    const received: unknown[] = []
+    const ports: number[] = []
+    const ctx = {
+      tools: mcpStub,
+      effect: (run: () => () => unknown) => { disposers.push(run()) },
+      orchestrator: { sources: undefined as unknown, context: () => ({ config: () => config,
+        state: { get: (k: string) => state.get(k), set: (k: string, v: unknown) => { state.set(k, v) } },
+        report: (_entry: string, health: { state: string; detail: string }) => { reports.push(health) },
+        receive: (trigger: unknown) => { received.push(trigger) } }) },
+    }
+    const start: NonNullable<PlaneApplyDeps['start']> = async (host, port, handler) => {
+      const listener = await startPlaneWebhook(host, port, handler)
+      ports.push(Number(/:(\d+)$/.exec(listener.address)?.[1] ?? -1))
+      return listener
+    }
+    return { ctx, disposers, state, reports, received, ports, start }
+  }
+
+  it('binds its own listener at the configured address, serves a signed delivery, and releases everything', async () => {
+    const store = new Store(join(mkdtempSync(join(tmpdir(), 'plane-plugin-')), 'db.sqlite'))
+    const sources = new SourceRegistry(() => store.settings(), new HealthBoard())
+    store.saveSettings(SettingsSchema.parse({
+      sources: { plane: { enabled: true, config: { secret: 'plane_wh_test', projects: [{ id: PROJECT, listen: 'all' }] } } },
+      policy: { sources: { plane: { allowed: [{ id: MEMBER }] } } } }))
+    const h = fakeContext({ secret: 'plane_wh_test', mcpServer: 'plane', webhookHost: '127.0.0.1',
+      webhookPort: 0, baseUrl: '', workspace: '', readPageSize: 30, workItemCreated: false, projects: [] })
+    h.ctx.orchestrator.sources = sources
+    applyPlane(h.ctx as never, { start: h.start })
     expect(sources.kind('plane')).toBeDefined()
-    expect(routes.map(route => route.path)).toContain('/plane/webhook')
-    for (const dispose of disposers) await dispose()
+
+    // The receiver listens on its own socket, not on a DSH web-server route: a signed delivery is stored, a wrong
+    // secret is refused with 403 and stores nothing.
+    const raw = JSON.stringify(commentEvent())
+    const post = (body: string, secret: string): Promise<number> => new Promise((resolve, reject) => {
+      const req = httpRequest(`http://127.0.0.1:${h.ports[0]}/`, { method: 'POST',
+        headers: { ...signed(body, secret), 'content-length': String(Buffer.byteLength(body)) } }, res => {
+        res.resume(); res.on('end', () => resolve(res.statusCode ?? 0)) })
+      req.on('error', reject); req.end(body) })
+    await vi.waitFor(() => { if (h.ports.length !== 1) throw new Error('not bound yet') })
+    expect(await post(raw, 'plane_wh_test')).toBe(202)
+    expect(h.received).toHaveLength(1)
+    expect(h.received[0]).toMatchObject({ id: key('plane', EVENT_ID), source: 'plane', actor: { source: 'plane', id: MEMBER } })
+    expect(await post(raw, 'plane_wh_wrong')).toBe(403)
+    expect(h.received).toHaveLength(1)
+    expect(h.reports.some(report => report.state === 'ready' && report.detail.includes('Listening on'))).toBe(true)
+
+    for (const dispose of h.disposers) await dispose()
     expect(sources.kind('plane')).toBeUndefined()
+    // The abort closed the socket: a new delivery can no longer reach the receiver.
+    await expect(post(raw, 'plane_wh_test')).rejects.toThrow()
     store.close()
+  })
+
+  it('rebinds when the bind target changes, and abort closes the socket', async () => {
+    const started: string[] = []
+    const closed: string[] = []
+    const controller = new AbortController()
+    let last: { state: string; detail: string } | undefined
+    let target: { host: string; port: number } | undefined
+    const running = watchPlaneWebhook({ target: () => target, everyMs: 10, signal: controller.signal,
+      start: async (host, port) => { started.push(`${host}:${port}`)
+        return { address: `${host}:${port}`, close: async () => { closed.push(`${host}:${port}`) } } },
+      report: (state, detail) => { last = { state, detail } } })
+    target = { host: '127.0.0.1', port: 3090 }
+    await vi.waitFor(() => { if (started.length !== 1) throw new Error('not bound') })
+    target = { host: '127.0.0.1', port: 3091 }
+    await vi.waitFor(() => { if (started.length !== 2) throw new Error('not rebound') })
+    expect(closed).toEqual(['127.0.0.1:3090'])
+    target = undefined
+    await vi.waitFor(() => { if (last?.state !== 'paused') throw new Error('not off') })
+    expect(closed).toEqual(['127.0.0.1:3090', '127.0.0.1:3091'])
+    controller.abort()
+    await running
+
+    // A failed bind is reported as an error and retried on the next tick, not thrown.
+    let failure: { state: string; detail: string } | undefined
+    const failedController = new AbortController()
+    const failed = watchPlaneWebhook({ target: () => ({ host: '127.0.0.1', port: 1 }), everyMs: 10, signal: failedController.signal,
+      start: async () => { throw new Error('EADDRINUSE') }, report: (state, detail) => { failure = { state, detail } } })
+    await vi.waitFor(() => { if (failure?.state !== 'error') throw new Error('not reported') })
+    expect(failure?.detail).toContain('EADDRINUSE')
+    failedController.abort()
+    await failed
   })
 })
 

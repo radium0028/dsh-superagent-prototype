@@ -6,9 +6,14 @@
  * acknowledges (including events the receiving scope filters out, so Plane does not burn its five retries on a
  * webhook it should keep), `4xx` is a deliberate refusal Plane never retries, and only `5xx` (the Trigger failed to
  * store) asks Plane to retry.
+ *
+ * The receiver is the plugin's own listener, not a route on the DSH web server: frp maps one TCP port to it, so the
+ * superagent management panel is never exposed on the public side. `watchPlaneWebhook` owns the listener lifecycle —
+ * it re-reads the bind target every few seconds (a host/port change rebinds without a restart), retries after a
+ * failed bind, and closes on abort.
  */
 import { createHmac, timingSafeEqual } from 'node:crypto'
-import type { IncomingMessage, ServerResponse } from 'node:http'
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { z } from 'zod'
 
 /** Plane delivers at most a few hundred KiB for a comment; refuse anything larger before buffering it. */
@@ -62,5 +67,65 @@ export async function planeWebhook(req: IncomingMessage, res: ServerResponse, se
   } catch (error) {
     // Only a storage failure asks Plane to retry; anything else already answered 2xx inside `route`.
     reply(res, 500, `Failed to store the trigger: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+/** A bound webhook listener; `address` is the `host:port` it actually answers on (the OS port when 0 was requested). */
+export interface PlaneListener { address: string; close(): Promise<void> }
+
+/** Bind the standalone receiver; `port` 0 asks the OS for a free port. Resolves once the socket listens, rejects on bind failure. */
+export function startPlaneWebhook(host: string, port: number,
+  handler: (req: IncomingMessage, res: ServerResponse) => Promise<void>): Promise<PlaneListener> {
+  return new Promise((resolve, reject) => {
+    const server = createServer((req, res) => {
+      handler(req, res).catch(() => { if (!res.headersSent) reply(res, 500, 'The receiver failed the request') })
+    })
+    server.once('error', reject)
+    server.listen(port, host, () => {
+      server.removeListener('error', reject)
+      const bound = server.address()
+      const address = typeof bound === 'object' && bound ? `${bound.address}:${bound.port}` : `${host}:${port}`
+      resolve({ address, close: () => new Promise<void>(done => { server.close(() => done()); server.closeAllConnections() }) })
+    })
+  })
+}
+
+export interface WebhookWatchDeps {
+  /** The bind target, or undefined while the Source is off (nothing listens then). */
+  target(): { host: string; port: number } | undefined
+  start(host: string, port: number): Promise<PlaneListener>
+  report(state: 'ready' | 'error' | 'paused', detail: string): void
+  signal: AbortSignal
+  /** Milliseconds between target checks; tests shorten it. @default 5000 */
+  everyMs?: number
+}
+
+/** The listener's lifecycle: bind the target, rebind when it changes, retry after a failed bind, and close on abort. */
+export async function watchPlaneWebhook(deps: WebhookWatchDeps): Promise<void> {
+  const wait = (ms: number): Promise<void> => new Promise(done => {
+    const timer = setTimeout(done, ms)
+    deps.signal.addEventListener('abort', () => { clearTimeout(timer); done() }, { once: true })
+  })
+  let listener: PlaneListener | undefined
+  try {
+    while (!deps.signal.aborted) {
+      const target = deps.target()
+      if (!target) {
+        if (listener) { const old = listener; listener = undefined; await old.close().catch(() => {}) }
+        deps.report('paused', 'Off')
+      } else if (!listener || listener.address !== `${target.host}:${target.port}`) {
+        if (listener) { const old = listener; listener = undefined; await old.close().catch(() => {}) }
+        const wanted = `${target.host}:${target.port}`
+        try {
+          listener = await deps.start(target.host, target.port)
+          deps.report('ready', `Listening on ${listener.address}`)
+        } catch (error) {
+          deps.report('error', `Cannot listen on ${wanted}: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+      await wait(deps.everyMs ?? 5_000)
+    }
+  } finally {
+    if (listener) await listener.close().catch(() => {})
   }
 }

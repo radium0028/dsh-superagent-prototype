@@ -208,14 +208,41 @@ location /plane/webhook {
 运维侧的 webhook URL 就是 `https://hooks.example.com/plane/webhook`。HMAC 签名是暴露这个端口的安全依据，验签不过的
 请求体一律回 `403`。
 
-**B. Plane 插件内单独监听。** 插件自己起一个 `node:http` 服务，绑定可配置的 `host:port`（例如 `0.0.0.0:3090`），
-与 DSH 的 web server 无关。这样完全不需要代理，即使 superagent 自己的端口仍只监听回环也能工作；代价是多开一个对外
-端口，必须刻意做可达性和防火墙配置。
+**B. Plane 插件内单独监听。** 插件自己起一个 `node:http` 服务，绑定可配置的 `host:port`（默认 `127.0.0.1:3090`，
+frpc 从本机连它，不需要对局域网暴露），与 DSH 的 web server 无关。这样公网暴露的只有这一个验签端点；代价是多一个
+监听端口，要刻意做防火墙配置。**本部署采用这一条**（见下节）。
 
 **C. 不用 webhook，改轮询。** 用 MCP 的 `workitem_comment` action=`list` 加游标分页轮询各项目的评论。这样完全不需要
 公网入口，代价是延迟，以及失去用户想要的推送语义。它是拿不到公网地址时的兜底。
 
 要建的是 A；B 和 C 留作兜底。三条路的接收端是同一个模块，差别只在注册方式。
+
+### frp 拓扑下的落地（当前部署环境）
+
+实际部署与上述通用方案的差别：
+
+- **Plane 在华为云主机 dsj5 上**（docker），域名 `plane.syqbshop.com` 由 dsj5 上的 nginx 终止 TLS。
+- **superagent 在局域网机器上**，通过 frp 做端口映射：局域网机器跑 frpc，连到 dsj5 的 frps，远端端口范围
+  TCP 12080-14089。也就是说 dsj5 上这些端口 → 隧道 → 局域网机器上的某个本地端口。
+- 因为 frp 映射的是**整个端口**而不是路径，把 3082（DSH web server，superagent 管理面板所在）整个映射出去会把
+  面板一起暴露。所以本部署采用方案 B：**Plane 插件内独立监听 `127.0.0.1:3090`，frpc 把 dsj5 的一个端口映射到
+  它**，公网只暴露这一个验签端点，管理面板不动。
+
+Payload URL 有两种给法，任选其一：
+
+1. **直连公网 IP + 端口**：`http://<dsj5-公网IP>:12089/plane/webhook`。需要在 dsj5 安全组放行 12089，并验证
+   dsj5 到自身公网 IP 的回环（在 dsj5 上 `curl -v http://<公网IP>:12089/` 测试；云厂商 EIP 是网关 NAT，
+   回环不一定通）。
+2. **复用 plane.syqbshop.com 的 nginx（推荐）**：dsj5 的 nginx 加一条 location 反代到本机 frp 端口：
+
+   ```nginx
+   location = /plane-hook {
+       proxy_pass http://127.0.0.1:12089/plane/webhook;
+   }
+   ```
+
+   Payload URL 就是 `https://plane.syqbshop.com/plane-hook`。好处：全程 HTTPS、不动安全组（12089 不对外放行，
+   frps 仍绑在 0.0.0.0 但外部进不来）、规避回环问题（Plane 容器 → 本机 nginx → 本机 frp 端口，不出公网）。
 
 ### 触发判定
 
@@ -318,6 +345,8 @@ kind 的策略部分沿用飞书的形状：`allowed` 存 Plane 用户 UUID，�
 | --- | --- |
 | `mcpServer` | MCP 服务器的命名空间，默认 `plane`，对应工具前缀 `mcp__plane__`。 |
 | `secret` | webhook 密钥 `plane_wh_…`，用于校验 `X-Plane-Signature`。 |
+| `webhookHost` | 接收端监听地址，默认 `127.0.0.1`。frp 的 frpc 从本机连它，所以保持回环即可。 |
+| `webhookPort` | 接收端监听端口，默认 `3090`。frpc 映射的本地端口要与它一致。 |
 | `projects` | 由 `id`、`name`、`listen`（`mentions` 或 `all`）组成的行。 |
 | `workItemCreated` | 新建工作项是否也开 Ticket。默认关闭。 |
 
@@ -329,7 +358,8 @@ Plane 实例地址、workspace slug 和 API key **不在这里**：它们属于 
 ## 构建与注册
 
 1. `src/sources/plane.ts` —— kind 与插件入口，照着 `src/sources/github.ts` 写。
-2. `src/sources/plane-webhook.ts` —— 接收端，注册在 `ctx.webServer` 上（方案 A）或注册在自己的监听器上（方案 B）。
+2. `src/sources/plane-webhook.ts` —— 接收端，插件内独立 `node:http` 监听 `127.0.0.1:3090`（方案 B，frp 部署所需；
+   注册在 `ctx.webServer` 上的方案 A 留作非 frp 部署的备选）。
 3. `src/sources/plane-mcp.ts` —— MCP 适配层，用 `ctx.tools.execute()` 调 `mcp__plane__*`。
 4. `src/deployment.ts` —— `PlaneAccountsSchema`（只含 `secret` 与 `mcpServer`）、`SETUP_FIELDS` 条目，以及
    `resolvePlane`，它检查 MCP 服务器是否已连上（`ctx.tools.get('mcp__plane__workitem')` 非空即视为就绪）。
@@ -351,8 +381,43 @@ Plane 实例地址、workspace slug 和 API key **不在这里**：它们属于 
    `command` 改成该目录下 `uvx` 的绝对路径。改完重启对应实例，并确认 Host 里 `plane` 的 Server 变为可用。
 2. **让 superagent 进程也加载 MCP 连接器。** 连接记录本身是全局的，但每个 DSH 进程各自拉起 MCP 子进程，需要确认
    superagent profile 里 MCP 连接器插件已启用。
-3. **nginx 反代一条路径到 `127.0.0.1:3082/plane/webhook`**，并把该公开 URL 填进 Plane 的 Payload URL。
-4. **在 Plane 建 webhook**，勾选 `workitem.comment.created`（以及需要的 `workitem.created`），保存并下载密钥 CSV。
+3. **frp 加一条 TCP 端口映射**（改局域网机器上的 frpc 配置）。选 12080-14089 里一个没被占用的端口，比如
+   `12089`，映射到接收端的监听端口：
+
+   ```toml
+   # frpc.toml（新版 frp）
+   [[proxies]]
+   name = "plane-webhook"
+   type = "tcp"
+   localIP = "127.0.0.1"
+   localPort = 3090
+   remotePort = 12089
+   ```
+
+   ```ini
+   # frpc.ini（旧版 frp）
+   [plane-webhook]
+   type = tcp
+   local_ip = 127.0.0.1
+   local_port = 3090
+   remote_port = 12089
+   ```
+
+   改完重载/重启 frpc。注意 frp 映射的是整个端口而不是路径，所以接收端用独立监听（3090），**不要**映射 3082
+   （那会把 superagent 管理面板一起暴露出去）。
+
+4. **在 Plane 建 webhook**。Workspace settings → Webhooks → Add webhook：
+   - **Payload URL** 二选一：
+     - 直连：`http://<dsj5-公网IP>:12089/plane/webhook`（需在 dsj5 安全组放行 12089，并先验证 dsj5 到自身
+       公网 IP 的回环是否通）；
+     - 走 nginx（推荐）：在 dsj5 服务 plane.syqbshop.com 的 nginx 上加 `location = /plane-hook`，反代到
+       `http://127.0.0.1:12089/plane/webhook`，Payload URL 填 `https://plane.syqbshop.com/plane-hook`
+       （不动安全组、全程 HTTPS、规避回环问题）。
+   - 勾选 `workitem.comment.created`（需要"新建工作项也开 Ticket"时加勾 `workitem.created`）；
+   - 保存后下载密钥 CSV（`plane_wh_…`），填进 `source:plane.secret`。
+
+   验证：在 Plane 里给任意工作项加一条评论，Plane 的 webhook 详情页应显示一次 Successful 投递；superagent 侧
+   接收端日志/面板应出现该 Trigger。
 
 ## 测试
 
@@ -369,8 +434,10 @@ Plane 实例地址、workspace slug 和 API key **不在这里**：它们属于 
 
 ## 已定决定
 
-1. **网络路线：A，反向代理。** 运维的 Plane 是自建且已有公网域名和 HTTPS，由 nginx 把一个路径暴露到 superagent 的
-   回环端口。接收端注册在 DSH 的 web server 上；不新增监听端口，也不轮询。
+1. **网络路线：frp TCP 端口映射 + 插件内独立监听。** Plane 在华为云主机 dsj5 上，superagent 在局域网机器上，两台
+   机器之间已有 frp 隧道（远端端口范围 12080-14089）。接收端由插件在 `127.0.0.1:3090` 独立监听，frpc 把 dsj5 的
+   12089 映射到它。frp 映射的是端口而非路径，映射 3082 会把整个管理面板暴露，所以不用方案 A。
+   （原先记的"A 反向代理"适用于 superagent 机器上直接跑 nginx 的部署，本环境不适用；A 仍保留为非 frp 部署的备选。）
 2. **触发规则：规则 1。** 受监听项目里，名单内成员的评论即明确请求。
 3. **Plane 部署形态：自建、带公网域名。**
 4. **API 层用 Plane MCP，不手写 REST 客户端。** MCP 覆盖读写需要，原生带幂等参数，还白送 PQL、名单与 200 多个
@@ -396,7 +463,7 @@ Plane 实例地址、workspace slug 和 API key **不在这里**：它们属于 
 
 - 把 `uvx` 放到 DSH 能找到的位置（或把 MCP 连接的 `command` 改成绝对路径）——这是用 MCP 的前置条件。
 - webhook 密钥 `plane_wh_…`，创建 webhook 时以 CSV 下载。
-- nginx 对外提供的那个公开 URL，例如 `https://hooks.example.com/plane/webhook`，填到
-  **Workspace settings → Webhooks** 里的 Payload URL。
+- frp 映射用的那个 dsj5 端口（如 12089）和最终 Payload URL（`http://<dsj5-公网IP>:12089/plane/webhook` 或
+  `https://plane.syqbshop.com/plane-hook`），填到 **Workspace settings → Webhooks** 里的 Payload URL。
 - 需要监听的项目 id，以及可以发起工作的 Plane 用户 id（可用 MCP 的 `member` action=`list_workspace` 取）。
 - API key 已经在 MCP 连接里，不需要另外提供。

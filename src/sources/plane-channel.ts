@@ -41,8 +41,9 @@ export function planeSender(mcp: () => PlaneMcp) {
   }
 }
 
-/** Work item link for cards; `host` is the Plane base URL from the MCP connection. */
+/** Work item link for cards; `host` is the Plane base URL from the Source's setting or the MCP connection. */
 export function planeLink(address: Record<string, string>, host: string): ChannelLink {
   const ref = { projectId: address.projectId ?? '', workItemId: address.workItemId ?? '' }
-  return { url: ref.projectId && ref.workItemId ? planeWorkItemUrl(host, ref) : '', label: { zh: 'Plane 工作项', en: 'Plane work item' } }
+  return { url: ref.projectId && ref.workItemId && host ? planeWorkItemUrl(host, ref) : '',
+    label: { zh: 'Plane 工作项', en: 'Plane work item' } }
 }
