@@ -15,3 +15,13 @@
 ## Comments
 
 （待填）
+## Comments
+
+- 2026-11-13 部署切换完成：profile 的 dsh-superagent link 从 gitlab worktree 改指主 checkout（plane-source 分支），
+  profile patch 启用 `dsh-superagent-plane`，重建重启。验证结果：
+  - 接收端已在 127.0.0.1:3090 监听（health "Listening on 127.0.0.1:3090"）；
+  - MCP 适配器打通真实 API（member/project 调用曾成功返回真实数据）；
+  - 冒烟：向 3090 POST 签名载荷 → 202 stored → store.sqlite 的 trigger/trigger_thread 表出现正确的 plane Trigger
+    （thread `plane:<project>:<workitem>`、actor UUID、human=1；projects 未配置故按 filtered 语义不开工单）；
+  - 遗留：Plane 侧按 token 限流（429 RATE_LIMIT_EXCEEDED），当天探测过多所致，成员名单待窗口冷却后面板 Sync now 补拉；
+  - 待运维：frpc 加 12089→3090 映射、dsj5 nginx 加 /plane-hook 反代、Plane 建 webhook 拿密钥、Source 配置填 secret。
