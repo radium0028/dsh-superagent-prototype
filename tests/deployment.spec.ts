@@ -18,10 +18,11 @@ const lark = (status: object, mode = 'bot', bot: object = { bot: { open_id: 'ou_
   `case "$*" in\n  "auth status") echo '${JSON.stringify(status)}' ;;\n  "config strict-mode") echo 'strict-mode: ${mode} (source: profile)' ;;\n  "api GET /open-apis/bot/v3/info --as bot --format ndjson") echo '${JSON.stringify(bot)}' ;;\nesac`
 /** Fake glab CLI signed in as `user` answering per-project access probes; projects it does not answer exit 1. */
 const glab = (file: string, user = '{"id":7,"username":"Agent-Bot","commit_email":"commit@example.com","email":"account@example.com"}',
-  projects: Array<[string, string]> = [['group%2Fproj', '{"path":"group/proj","level":40}'], ['group%2Fother', '{"path":"group/other","level":20}']]): string => {
-  const jq = '{path: .path_with_namespace, level: ((.permissions.project_access.access_level // .permissions.group_access.access_level) // 0)}'
+  projects: Array<[string, string, number]> = [['group%2Fproj', 'group/proj', 40], ['group%2Fother', 'group/other', 20]]): string => {
+  // glab api has no --jq filter, so the probe reads the raw project JSON and takes the access level from it.
+  const answer = (path: string, level: number) => JSON.stringify({ path_with_namespace: path, permissions: { project_access: { access_level: level } } })
   return program(file, `case "$*" in\n  "api user --hostname gitlab.example.com") echo '${user}' ;;\n` +
-    projects.map(([project, answer]) => `  "api projects/${project} --hostname gitlab.example.com --jq ${jq}") echo '${answer}' ;;\n`).join('') +
+    projects.map(([project, path, level]) => `  "api projects/${project} --hostname gitlab.example.com") echo '${answer(path, level)}' ;;\n`).join('') +
     '  *) exit 1 ;;\nesac')
 }
 const minimal = (overrides: Record<string, unknown> = {}) => ({ stateDir: join(dir, 'state'), ...overrides })
@@ -112,10 +113,10 @@ describe('gitlab', () => {
   it('reads the GitLab account and canonical project paths, or finds none when the GitLab Source is unset', async () => {
     expect(await resolveGitlab(machine(), {}, probe, path)).toBeUndefined()
     glab(join(dir, 'bin', 'glab'))
-    const deployment = await resolveGitlab(machine(), { host: 'gitlab.example.com', project: 'group/proj', projects: ['group/other', 'group/proj'], cli: 'glab' }, probe, path)
+    const deployment = await resolveGitlab(machine(), { host: 'gitlab.example.com', project: 'group/proj', projects: [{ path: 'group/other' }, { path: 'group/proj' }], cli: 'glab' }, probe, path)
     expect(deployment).toEqual({ cli: join(dir, 'bin', 'glab'), host: 'gitlab.example.com', login: 'Agent-Bot', email: 'commit@example.com', project: 'group/proj', projects: ['group/proj', 'group/other'] })
     // A renamed project is still resolved by its configured name; notifications carry GitLab's current path_with_namespace.
-    glab(join(dir, 'bin', 'glab-renamed'), undefined, [['group%2Fgadgets', '{"path":"group/proj","level":40}']])
+    glab(join(dir, 'bin', 'glab-renamed'), undefined, [['group%2Fgadgets', 'group/proj', 40]])
     expect(await resolveGitlab(machine(), { host: 'gitlab.example.com', project: 'group/gadgets', cli: 'glab-renamed' }, probe, path))
       .toEqual({ cli: join(dir, 'bin', 'glab-renamed'), host: 'gitlab.example.com', login: 'Agent-Bot', email: 'commit@example.com', project: 'group/proj', projects: ['group/proj'] })
   })
@@ -130,7 +131,7 @@ describe('gitlab', () => {
     expect((await resolveGitlab(machine(), config, probe, path))?.email).toBe('7-Agent-Bot@noreply.gitlab.example.com')
   })
   it('names what GitLab setup needs and where it is set', async () => {
-    const config = { host: 'gitlab.example.com', project: 'group/proj', projects: ['group/watch'], cli: 'glab' }
+    const config = { host: 'gitlab.example.com', project: 'group/proj', projects: [{ path: 'group/watch' }], cli: 'glab' }
     const needs = (code: string, values: Record<string, unknown>, gitlab: unknown) =>
       expect(resolveGitlab(machine(), gitlab, probe, path)).rejects.toEqual(setupError('gitlab', code, values))
     glab(join(dir, 'bin', 'glab'))
@@ -147,10 +148,10 @@ describe('gitlab', () => {
       `case "$*" in\n  "api user --hostname gitlab.example.com") echo '{"id":7,"username":"Agent-Bot"}' ;;\n  *) echo 'null' ;;\nesac`)
     await needs('gitlabProjectUnreported', { repository: 'group/proj' }, { ...config, cli: unreported })
     await needs('gitlabProjectReadOnly', { account: 'Agent-Bot', repository: 'group/proj' },
-      { ...config, cli: glab(join(dir, 'bin', 'glab-reader'), undefined, [['group%2Fproj', '{"path":"group/proj","level":10}'], ['group%2Fwatch', '{"path":"group/watch","level":40}']]) })
+      { ...config, cli: glab(join(dir, 'bin', 'glab-reader'), undefined, [['group%2Fproj', 'group/proj', 10], ['group%2Fwatch', 'group/watch', 40]]) })
     // A watched project reports unreadable and read-only access as one problem.
     await needs('gitlabWatchUnreadable', { account: 'Agent-Bot', repository: 'group/watch', host: 'gitlab.example.com' }, config)
     await needs('gitlabWatchUnreadable', { account: 'Agent-Bot', repository: 'group/watch', host: 'gitlab.example.com' },
-      { ...config, cli: glab(join(dir, 'bin', 'glab-watcher'), undefined, [['group%2Fproj', '{"path":"group/proj","level":40}'], ['group%2Fwatch', '{"path":"group/watch","level":10}']]) })
+      { ...config, cli: glab(join(dir, 'bin', 'glab-watcher'), undefined, [['group%2Fproj', 'group/proj', 40], ['group%2Fwatch', 'group/watch', 10]]) })
   })
 })

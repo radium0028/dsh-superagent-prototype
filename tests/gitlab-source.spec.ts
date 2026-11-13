@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Engine, key, type Assessor, type Executor, type Ticket, type Trigger } from '../src/core/index.ts'
 import { KV, type GitlabRetry } from '../src/kv.ts'
 import { apply as applyGitlab, gitlabKind, name as pluginName, inject as pluginInject, pollFailure, pollRound } from '../src/sources/gitlab.ts'
+import type { FieldSpec } from '../src/sources/kind.ts'
 import { issueTrigger, threadKey, type GitlabIssue, type GitlabMr, type GitlabNote } from '../src/sources/gitlab-trigger.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import { Store } from '../src/app/store.ts'
@@ -108,6 +109,19 @@ describe('gitlab source', () => {
       failuresBeforeError: 1, observeIssues: false, observeMrs: false, observeNotes: false, observePipelines: false })
     expect(pollFailure(1, 2, new Error('boom'))).toBeUndefined()
     expect(pollFailure(2, 2, new Error('boom'))).toMatchObject({ state: 'error', code: 'pollFailures', values: { count: '2' } })
+  })
+  it('keeps the watched projects as rows of paths, and checks a path against the field pattern', () => {
+    expect(gitlabKind.schema.parse({ projects: [{ path: 'radium/startingb' }] }).projects).toEqual([{ path: 'radium/startingb' }])
+    // The panel edits the watched projects as rows, so a bare path is not a row and the schema refuses it.
+    expect(() => gitlabKind.schema.parse({ projects: ['radium/startingb'] })).toThrow()
+    const field = gitlabKind.fields.find(spec => spec.key === 'projects') as Extract<FieldSpec, { type: 'rows' }>
+    const pattern = (field.columns[0] as { pattern?: string }).pattern!
+    // The HTML pattern attribute matches the whole value, so the path of a project with subgroups passes it.
+    const matches = (value: string) => new RegExp(`^(?:${pattern})$`).test(value)
+    expect(matches('radium/startingb')).toBe(true)
+    expect(matches('group/sub/project')).toBe(true)
+    expect(matches('https://git.syqbshop.com/radium/startingb.git')).toBe(false)
+    expect(matches('radium/starting b')).toBe(false)
   })
   it('maps triggers onto the admission table rows of its watched scopes', () => {
     const config = gitlabKind.schema.parse({ observeIssues: true })

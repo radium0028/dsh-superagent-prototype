@@ -38,6 +38,14 @@ it('merges lists of named elements element by element, in their order, with what
     .toEqual({ value: chats('all', 'all'), conflicts: [['oc_1', 'listen']] })
 })
 
+it('merges lists of rows keyed by path, as the GitLab watched projects are', () => {
+  const row = (path: string) => ({ path })
+  // Mine removes a watched project and theirs adds another, so the merge keeps both changes.
+  expect(merged({ projects: [row('group/one'), row('group/two')] }, { projects: [row('group/one')] },
+    { projects: [row('group/one'), row('group/two'), row('group/three')] }))
+    .toEqual({ value: { projects: [row('group/one'), row('group/three')] }, conflicts: [] })
+})
+
 it('merges a list without names as a whole', () => {
   expect(merged(['a'], ['a', 'b'], ['c'])).toEqual({ value: ['a', 'b'], conflicts: [[]] })
   expect(merged(['a'], ['a'], ['c'])).toEqual({ value: ['c'], conflicts: [] })

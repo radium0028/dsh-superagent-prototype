@@ -112,7 +112,9 @@
                   toolName: subagent
                   modelSelection: true
                   modelDiscovery: true
-                  agentPreset: standard
+                  # No agentPreset here: a worker's subagents inherit the worker's preset (the
+                  # design below), and a fixed id would have to be listed in allowedAgentPresets,
+                  # which subagent-hub rewrites to its own hub-agent-* ids (see 008-subagent-hub).
           - id: tool-todo
             name: '@deepseek-ai/dsh-tool-todo'
             config:

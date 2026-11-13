@@ -36,7 +36,7 @@
 |---|---|---|
 | `host` | string，必填 | 实例域名（无 scheme），如 `gitlab.example.com` |
 | `project` | string，必填 | 执行项目完整路径（可多段子群组） |
-| `projects` | string[]，默认 `[]` | 其余观察项目路径；实际观察列表 = `projects ∪ {project}` |
+| `projects` | `{ path: string }[]`，默认 `[]` | 其余观察项目路径（面板按行编辑，一行一个项目）；实际观察列表 = `projects ∪ {project}` |
 | `cli` | string，必填 | glab 包装脚本（命令名或绝对路径，等价 gh-agent） |
 | `agentEmail` | string，默认 `''` | 覆盖探测的提交邮箱 |
 | `pollSeconds` | int 60（60–3600） | 轮询间隔 |
