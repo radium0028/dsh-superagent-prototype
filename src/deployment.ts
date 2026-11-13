@@ -48,18 +48,27 @@ export const GithubAccountsSchema = z.object({
 })
 export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
 export const PlaneAccountsSchema = z.object({ secret: z.string().trim().default('') })
+export const GitlabAccountsSchema = z.object({
+  host: z.string().trim().regex(/^(?:[A-Za-z0-9][A-Za-z0-9.-]*)?$/).default(''),
+  project: z.string().trim().regex(/^(?:[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*)?$/).default(''),
+  projects: z.array(z.string().trim().regex(/^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/)).default([]),
+  cli: z.string().trim().default(''),
+  agentEmail: z.string().trim().default(''),
+})
 /** Source configuration keys that affect deployment setup and trigger a restart when changed. */
 export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape),
-  feishu: Object.keys(FeishuBotSchema.shape), plane: Object.keys(PlaneAccountsSchema.shape) }
-
+  feishu: Object.keys(FeishuBotSchema.shape), gitlab: Object.keys(GitlabAccountsSchema.shape), plane: Object.keys(PlaneAccountsSchema.shape) }
+/** Source configuration keys that affect deployment setup and trigger a restart when changed. */
 export interface Deployment extends Machine {
   repository: string
   github: { cli: string; login: string; noreply: string }
   feishu?: FeishuBot
+  gitlab?: GitlabAccount
   plane?: PlaneAccount
 }
 export interface FeishuBot { cli: string; appId: string; brand: 'feishu' | 'lark'; botId: string; name: string }
 export interface PlaneAccount { secret: string; mcpServer: string }
+export interface GitlabAccount { cli: string; host: string; login: string; email: string; project: string; projects: string[] }
 
 /** Resolve a command name or absolute path to an executable file, ignoring the worker shim directory. */
 export function executable(name: string, path: string, exclude?: string): string {
@@ -145,4 +154,41 @@ export function resolvePlane(plane: unknown, tools: { get(name: string): unknown
   if (!secret) throw new SetupError('planeSecretUnset')
   if (!tools.get(`mcp__${mcpServer}__workitem`)) throw new SetupError('planeMcpUnavailable')
   return { secret, mcpServer }
+}
+const GitlabUser = z.object({ id: z.number().int().positive(), username: z.string().regex(/^[A-Za-z0-9_.-]+$/), commit_email: z.string().nullish(), email: z.string().nullish() })
+const GitlabProjectAccess = z.object({ path: z.string().regex(/^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/), level: z.number() })
+/**
+ * Verify the agent's GitLab CLI identity, push access to the execution project, and read access to every watched project.
+ * GitLab is an optional secondary source, so a fully unset configuration resolves to no account, like the Feishu bot.
+ */
+export async function resolveGitlab(machine: Machine, gitlab: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<GitlabAccount | undefined> {
+  const accounts = GitlabAccountsSchema.parse(gitlab ?? {})
+  if (!accounts.host && !accounts.project && !accounts.cli && !accounts.projects.length) return undefined
+  if (!accounts.host) throw new SetupError('gitlabHostUnset')
+  if (!accounts.cli) throw new SetupError('gitlabAgentCliUnset')
+  if (!accounts.project) throw new SetupError('gitlabProjectUnset')
+  let cli: string
+  try { cli = executable(accounts.cli, path, workerBin(machine.stateDir)) } catch (error) { throw new SetupError('gitlabAgentCliMissing', { output: reason(error) }) }
+  const user = parsed(GitlabUser, await probe([cli, 'api', 'user', '--hostname', accounts.host]).catch((error: unknown) => { throw new SetupError('gitlabAgentCliSignedOut', { output: reason(error) }) }))
+  if (!user) throw new SetupError('gitlabAgentCliNoAccount')
+  const access = async (repository: string) => {
+    // The canonical project path comes from GitLab, so renamed projects still match incoming notifications.
+    const text = await probe([cli, 'api', `projects/${encodeURIComponent(repository)}`, '--hostname', accounts.host,
+      '--jq', '{path: .path_with_namespace, level: ((.permissions.project_access.access_level // .permissions.group_access.access_level) // 0)}']).catch((error: unknown) => {
+        throw new SetupError('gitlabProjectUnreadable', { account: user.username, repository, host: accounts.host, output: reason(error) })
+      })
+    const project = parsed(GitlabProjectAccess, text)
+    if (!project) throw new SetupError('gitlabProjectUnreported', { repository })
+    return project
+  }
+  const execution = await access(accounts.project)
+  if (execution.level < 30) throw new SetupError('gitlabProjectReadOnly', { account: user.username, repository: execution.path })
+  const projects = [execution.path]
+  for (const repository of accounts.projects.filter(name => name !== accounts.project)) {
+    // Watched projects only need read access; any probe failure there is one unreadable-project problem.
+    const watched = await access(repository).catch(() => { throw new SetupError('gitlabWatchUnreadable', { account: user.username, repository, host: accounts.host }) })
+    if (watched.level < 20) throw new SetupError('gitlabWatchUnreadable', { account: user.username, repository, host: accounts.host })
+    if (!projects.includes(watched.path)) projects.push(watched.path)
+  }
+  return { cli, host: accounts.host, login: user.username, email: accounts.agentEmail || user.commit_email || user.email || `${user.id}-${user.username}@noreply.${accounts.host}`, project: execution.path, projects }
 }

@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SENSITIVE_ENV_PATTERN, type SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
-import { GIT_LOCATION, agentVariables, credentialHelper, runAsWorker, verifyDirectory, withoutDirectory, workerBin, workerGitConfig, writeEnvironment }
+import { GIT_LOCATION, agentVariables, credentialHelper, runAsWorker, verifyDirectory, verifyEnvironment, withoutDirectory, workerBin, workerGitConfig, writeEnvironment }
   from '../src/infra/environment.ts'
 import { CliError } from '../src/infra/commands.ts'
 import { testDeployment } from './fixtures/deployment.ts'
@@ -38,6 +38,20 @@ describe('worker shims', () => {
     await expect(exec(join(bin, 'lark-cli'), ['im', '+chat-list'])).rejects.toMatchObject({ code: 1, stderr: 'lark-cli is unavailable: this installation has no Feishu bot.\n' })
     await expect(exec(join(bin, 'personal-gh'), [])).rejects.toMatchObject({ code: 1, stderr: 'personal-gh is blocked in this installation; use gh, which acts as agent-bot.\n' })
   })
+  it('make `glab` run the GitLab CLI when the GitLab source is configured, and fail with a hint when it is not', async () => {
+    const glab = program(join(dir, 'real', 'glab-agent'), 'echo glab "$@"')
+    const gitlab = { cli: glab, host: 'gitlab.example.com', login: 'glab-bot', email: 'glab-bot@example.com', project: 'group/proj', projects: ['group/proj'] }
+    await writeEnvironment(testDeployment({ stateDir: dir, gitlab }), [])
+    const bin = workerBin(dir)
+    expect((await exec(join(bin, 'glab'), ['api', 'user'])).stdout).toBe('glab api user\n')
+    await expect(writeEnvironment(testDeployment({ stateDir: dir, gitlab: undefined, feishu: undefined }), [])).resolves.toBeUndefined()
+    await expect(exec(join(bin, 'glab'), [])).rejects.toMatchObject({ code: 1, stderr: 'glab is unavailable: this installation has no GitLab source.\n' })
+  })
+  it('name both agent logins in a blocked command when the GitLab source is configured', async () => {
+    const gitlab = { cli: join(dir, 'glab-agent'), host: 'gitlab.example.com', login: 'glab-bot', email: '', project: 'group/proj', projects: ['group/proj'] }
+    await writeEnvironment(testDeployment({ stateDir: dir, gitlab }), ['personal-gh'])
+    await expect(exec(join(workerBin(dir), 'personal-gh'), [])).rejects.toMatchObject({ code: 1, stderr: 'personal-gh is blocked in this installation; use gh or glab, which act as agent-bot / glab-bot.\n' })
+  })
   it('keep `gh` and `lark-cli` working, and shim no `git`, when the blocked commands name the commands workers need', async () => {
     const gh = program(join(dir, 'gh-agent'), 'echo gh "$@"'), lark = program(join(dir, 'lark-bot'), 'echo lark "$@"')
     const base = testDeployment()
@@ -49,7 +63,7 @@ describe('worker shims', () => {
   it('replace only what dsh-superagent wrote and refuse anything else in its places', async () => {
     await writeEnvironment(testDeployment({ stateDir: dir }), ['old-cli'])
     await writeEnvironment(testDeployment({ stateDir: dir }), [])
-    expect(readdirSync(workerBin(dir)).sort()).toEqual(['gh', 'lark-cli'])
+    expect(readdirSync(workerBin(dir)).sort()).toEqual(['gh', 'glab', 'lark-cli'])
     // A file that merely contains the marker on a later line, a symlink to a shim, and a foreign gitconfig are all rejected.
     writeFileSync(join(workerBin(dir), 'notes'), `notes\nmore\n${readFileSync(join(workerBin(dir), 'gh'), 'utf8').split('\n')[1]}\n`)
     await expect(writeEnvironment(testDeployment({ stateDir: dir }), [])).rejects.toThrow(`${join(workerBin(dir), 'notes')} was not written by dsh-superagent`)
@@ -66,7 +80,7 @@ describe('worker shims', () => {
     const legacy = (file: string, name: string) => writeFileSync(file, readFileSync(file, 'utf8').replace('Written by dsh-superagent', `Written by ${name}`))
     legacy(join(workerBin(dir), 'old-cli'), 'dsh-tag'); legacy(join(workerBin(dir), 'older-cli'), 'dsh-freelancer'); legacy(workerGitConfig(dir), 'dsh-go')
     await writeEnvironment(testDeployment({ stateDir: dir }), [])
-    expect(readdirSync(workerBin(dir)).sort()).toEqual(['gh', 'lark-cli'])
+    expect(readdirSync(workerBin(dir)).sort()).toEqual(['gh', 'glab', 'lark-cli'])
     expect(readFileSync(workerGitConfig(dir), 'utf8')).toContain('Written by dsh-superagent')
   })
 })
@@ -182,5 +196,35 @@ describe('the repository the host\'s environment names', () => {
       for (const name of GIT_LOCATION) expect(env, name).not.toHaveProperty(name)
       expect(env.GIT_CEILING_DIRECTORIES).toBe(dir)
     } finally { vi.unstubAllEnvs() }
+  })
+})
+
+describe('the GitLab source in the worker environment', () => {
+  const signal = new AbortController().signal
+  const gitlab = { cli: '/opt/agent tools/glab', host: 'gitlab.example.com', login: 'glab-bot', email: 'glab-bot@example.com', project: 'group/proj', projects: ['group/proj'] }
+  it('names the GitLab credential helper and rewrites GitLab SSH remotes, keeping the GitHub sections', async () => {
+    await writeEnvironment(testDeployment({ stateDir: dir, github: { ...testDeployment().github, cli: '/opt/agent tools/gh' }, gitlab }), [])
+    const env = workerEnv({ PATH: process.env.PATH, HOME: dir, ...agentVariables(dir) })
+    const git = async (...args: string[]): Promise<string> => (await exec('git', args, { cwd: dir, env })).stdout.trim()
+    await git('init', '-q', 'repo')
+    await exec('git', ['-C', 'repo', 'remote', 'add', 'origin', 'git@gitlab.example.com:group/proj.git'], { cwd: dir, env })
+    expect(await git('-C', 'repo', 'remote', 'get-url', '--push', 'origin')).toBe('https://gitlab.example.com/group/proj.git')
+    expect(await git('config', '--show-origin', '--get-all', 'credential.https://gitlab.example.com.helper')).toBe(`file:${workerGitConfig(dir)}\t${credentialHelper('/opt/agent tools/glab')}`)
+    expect(await git('config', '--show-origin', '--get-all', 'credential.https://github.com.helper')).toBe(`file:${workerGitConfig(dir)}\t${credentialHelper('/opt/agent tools/gh')}`)
+  })
+  it('strips every environment variable that would give workers another GitLab identity', () => {
+    const env = workerEnv({ GITLAB_TOKEN: 't', GITLAB_ACCESS_TOKEN: 't', OAUTH_TOKEN: 't', GITLAB_HOST: 'other.example.com', GITLAB_URI: 'https://other.example.com', GL_HOST: 'other.example.com', GLAB_API_PROTOCOL: 'http', ...agentVariables(dir) })
+    for (const name of ['GITLAB_TOKEN', 'GITLAB_ACCESS_TOKEN', 'OAUTH_TOKEN', 'GITLAB_HOST', 'GITLAB_URI', 'GL_HOST', 'GLAB_API_PROTOCOL']) expect(env, name).not.toHaveProperty(name)
+  })
+  it('verifies the GitLab credential helper resolves exactly, and fails as too-old git when it does not', async () => {
+    await writeEnvironment(testDeployment({ stateDir: dir, gitlab }), [])
+    const queried: string[] = []
+    const recording = (config: string): SubprocessRuntime => {
+      const inner = subprocess(config)
+      return { spawn: (spec: Parameters<SubprocessRuntime['spawn']>[0]) => { const argv = [...spec.argv]; if (argv[1] === 'config') queried.push(argv.at(-1)!); return inner.spawn(spec) } } as unknown as SubprocessRuntime
+    }
+    await expect(verifyEnvironment(testDeployment({ stateDir: dir, gitlab }), recording(workerGitConfig(dir)), signal)).resolves.toBeUndefined()
+    expect(queried).toContain('credential.https://gitlab.example.com.helper')
+    await expect(verifyEnvironment(testDeployment({ stateDir: dir, gitlab }), subprocess(join(dir, 'missing-global')), signal)).rejects.toThrow(/git 2\.32/)
   })
 })

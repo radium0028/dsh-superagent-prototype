@@ -37,7 +37,7 @@ import { executorLoad, ticketDetail, ticketList } from '../src/app/views/tickets
 
 let runtime: Runtime
 const viewsOf = (value: Runtime) => ({ store: value.store, sources: value.sources, links: value.links() })
-const overviewOf = (value: Runtime) => overview(viewsOf(value), value.health, policyVersion(value.store.settings()), executorLoad(value.store, value.executor.activeCount()), value.setupProblem ?? value.feishuProblem)
+const overviewOf = (value: Runtime) => overview(viewsOf(value), value.health, policyVersion(value.store.settings()), executorLoad(value.store, value.executor.activeCount()), value.setupProblem ?? value.feishuProblem ?? value.gitlabProblem)
 let directory: string
 let controller: { create: ReturnType<typeof vi.fn>; selectModel: ReturnType<typeof vi.fn>; resolveAgent: ReturnType<typeof vi.fn>; rename: ReturnType<typeof vi.fn>; prompt: ReturnType<typeof vi.fn>; inspect: ReturnType<typeof vi.fn> }
 type RegisteredTool = { name: string; output: { render: (args: unknown, result: unknown) => unknown }; execute: (args: unknown, execution: { signal: AbortSignal }) => Promise<unknown> }
@@ -83,6 +83,7 @@ let answers: Record<string, string | Error>
 const AGENT = () => join(directory, 'agent-gh')
 const OTHER = () => join(directory, 'other-gh')
 const BOT = () => join(directory, 'lark-bot')
+const GLAB = () => join(directory, 'agent-glab')
 const HELPERS = 'git config -z --show-origin --get-all credential.https://github.com.helper'
 const SCOPED = 'git config -z --show-scope --get-regexp ^(credential\\..*|http\\..*extraheader)$'
 const subprocess = { spawn: vi.fn((spec: { argv: readonly string[] }) => {
@@ -94,12 +95,13 @@ const subprocess = { spawn: vi.fn((spec: { argv: readonly string[] }) => {
   return { done: Promise.resolve({ exitCode: answer instanceof Error ? 1 : 0, signal: null }), collected: { stdout: reader(answer instanceof Error ? '' : answer), stderr: reader(answer instanceof Error ? answer.message : '') } }
 }) }
 /** Source account overrides for test setup; `feishu: null` disables the Feishu source. */
-interface Accounts { github?: Record<string, unknown>; feishu?: Record<string, unknown> | null }
+interface Accounts { github?: Record<string, unknown>; feishu?: Record<string, unknown> | null; gitlab?: Record<string, unknown> | null }
 function seed(store: Store, accounts: Accounts = {}): void {
   const settings = store.settings()
   const { feishu: _feishu, ...others } = settings.sources
   const feishu = accounts.feishu === null ? undefined : { ...settings.sources.feishu?.config, cli: BOT(), ...accounts.feishu }
-  store.saveSettings(SettingsSchema.parse({ ...settings, sources: { ...others, github: { enabled: true, config: { repository: 'acme/widgets', cli: AGENT(), ...accounts.github } }, ...feishu ? { feishu: { enabled: true, config: feishu } } : {} } }))
+  const gitlab = accounts.gitlab === null ? undefined : { host: 'gitlab.example.com', project: 'group/proj', cli: GLAB(), ...accounts.gitlab }
+  store.saveSettings(SettingsSchema.parse({ ...settings, sources: { ...others, github: { enabled: true, config: { repository: 'acme/widgets', cli: AGENT(), ...accounts.github } }, ...feishu ? { feishu: { enabled: true, config: feishu } } : {}, ...gitlab ? { gitlab: { enabled: true, config: gitlab } } : {} } }))
 }
 let restarts: ReturnType<typeof vi.fn<() => void>>
 async function restart(machine: Partial<Machine> = {}, accounts: Accounts = {}): Promise<Runtime> {
@@ -868,6 +870,16 @@ it('reports each setup problem where the operator fixes it, and checks the agent
   expect(next.feishuProblem).toMatchObject({ place: 'feishu', code: 'feishuUserIdentity', values: { mode: 'off' } })
 })
 
+it('leaves a broken GitLab CLI out and says why; GitHub work goes on', async () => {
+  const next = await restart({}, { gitlab: { cli: GLAB() } })
+  await next.ready
+  expect(next.configured()).toBe(true)
+  expect(next.deployment.gitlab).toBeUndefined()
+  expect(next.gitlabProblem).toMatchObject({ place: 'gitlab', code: 'gitlabAgentCliMissing' })
+  expect(next.feishuProblem).toBeUndefined()
+  expect(next.setupProblem).toBeUndefined()
+})
+
 it('reports a failure to write the agent environment as environmentFailed and leaves this process\'s environment as it was', async () => {
   await runtime.stop()
   // The shim directory cannot be made: a file has its name.
@@ -972,12 +984,12 @@ it('runs setup again while the Feishu bot check failed, and restores the process
 
 it('writes worker shims and the agent environment from the configuration only, and restores the environment on stop', async () => {
   const bin = join(directory, 'worker-bin')
-  expect(readdirSync(bin).sort()).toEqual(['gh', 'lark-cli'])
+  expect(readdirSync(bin).sort()).toEqual(['gh', 'glab', 'lark-cli'])
   expect(readFileSync(join(bin, 'lark-cli'), 'utf8')).toContain(`exec '${BOT()}'`)
   runtime.store.saveSettings({ ...runtime.store.settings(), executor: { ...runtime.store.settings().executor, blockedCommands: ['personal-gh'] } })
   const next = await restart({}, { feishu: null })
   await next.ready
-  expect(readdirSync(bin).sort()).toEqual(['gh', 'lark-cli', 'personal-gh'])
+  expect(readdirSync(bin).sort()).toEqual(['gh', 'glab', 'lark-cli', 'personal-gh'])
   expect(readFileSync(join(bin, 'personal-gh'), 'utf8')).toContain('personal-gh is blocked in this installation; use gh, which acts as agent-bot.')
   expect(readFileSync(join(bin, 'lark-cli'), 'utf8')).toContain('lark-cli is unavailable: this installation has no Feishu bot.')
   expect(readFileSync(join(bin, 'gh'), 'utf8')).toContain(`exec '${AGENT()}'`)
@@ -1004,9 +1016,9 @@ it('rewrites the blocked-command shims when the Executor settings change them, w
   const bin = join(directory, 'worker-bin')
   const save = (blockedCommands: string[]) => runtime.settings.save('executor', { ...runtime.store.settings().executor, blockedCommands }, runtime.store.blockRevision('executor'), 'panel')
   expect(await save(['personal-gh'])).toMatchObject({ saved: true, restarting: false })
-  expect(readdirSync(bin).sort()).toEqual(['gh', 'lark-cli', 'personal-gh'])
+  expect(readdirSync(bin).sort()).toEqual(['gh', 'glab', 'lark-cli', 'personal-gh'])
   await save([])
-  expect(readdirSync(bin).sort()).toEqual(['gh', 'lark-cli'])
+  expect(readdirSync(bin).sort()).toEqual(['gh', 'glab', 'lark-cli'])
   // The commands workers need cannot be blocked.
   await expect(save(['gh'])).rejects.toThrow()
   expect(restarts).not.toHaveBeenCalled()

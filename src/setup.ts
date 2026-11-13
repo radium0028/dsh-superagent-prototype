@@ -1,7 +1,7 @@
 /** Structured startup and configuration errors with the settings location where the operator can fix them. */
 import { fill } from './infra/text.ts'
 
-export type SetupPlace = 'deployment' | 'github' | 'feishu' | 'plane'
+export type SetupPlace = 'deployment' | 'github' | 'feishu' | 'gitlab' | 'plane'
 export const SETUP_PROBLEMS = {
   foreignFile: ['deployment', '{file} was not written by dsh-superagent; move it, or choose another state directory.'],
   gitTooOld: ['deployment', 'git does not read the github.com credential configuration dsh-superagent writes; dsh-superagent needs git 2.32 or later.'],
@@ -21,6 +21,16 @@ export const SETUP_PROBLEMS = {
   feishuNoBot: ['feishu', 'The Feishu bot API did not return the bot\'s open_id.'],
   planeSecretUnset: ['plane', 'The Plane Source is on, and its webhook secret is not set.'],
   planeMcpUnavailable: ['plane', 'The Plane MCP server is not connected; restart dsh-superagent and check the plane connection in the Host.'],
+  gitlabHostUnset: ['gitlab', 'The GitLab Source names no instance host.'],
+  gitlabAgentCliUnset: ['gitlab', 'The agent GitLab CLI is not set.'],
+  gitlabAgentCliMissing: ['gitlab', 'The agent GitLab CLI was not found.'],
+  gitlabAgentCliSignedOut: ['gitlab', 'The agent GitLab CLI cannot read its account.'],
+  gitlabAgentCliNoAccount: ['gitlab', 'The agent GitLab CLI did not report a GitLab account.'],
+  gitlabProjectUnset: ['gitlab', 'The GitLab Source names no execution project.'],
+  gitlabProjectUnreadable: ['gitlab', '@{account} cannot read {repository} on {host}.'],
+  gitlabProjectUnreported: ['gitlab', 'The agent GitLab CLI did not return {repository}.'],
+  gitlabProjectReadOnly: ['gitlab', '@{account} cannot push to {repository} on {host}.'],
+  gitlabWatchUnreadable: ['gitlab', '@{account} cannot read the watched project {repository} on {host}.'],
 } as const satisfies Record<string, readonly [SetupPlace, string]>
 export type SetupCode = keyof typeof SETUP_PROBLEMS
 export interface SetupProblem { place: SetupPlace; code: SetupCode; values: Record<string, string>; detail: string }

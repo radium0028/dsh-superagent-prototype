@@ -110,6 +110,41 @@ export class Commands {
     if (!result.ok) throw membership(new CliError(`${result.error?.message ?? 'Feishu command failed'}${code ? ` (${code})` : ''}`, code))
     return result.data
   }
+  /** Resolves the GitLab source's glab CLI and instance host, refusing to run anything when the source is not configured. */
+  private gitlabTarget(): { cli: string; host: string } {
+    const gitlab = this.deployment.gitlab
+    if (!gitlab) throw new Error('The GitLab Source has no working glab CLI')
+    return gitlab
+  }
+  /** Restricts GitLab API calls to `projects/` paths without traversal or schemes; callers URL-encode project path segments. */
+  private gitlabPath(path: string): string {
+    const outside = /^\/|^[a-z]+:|(^|\/)\.\.?(\/|$)/i.test(path) || !/^projects\//.test(path)
+    if (outside) throw new Error('GitLab calls are restricted to the configured projects')
+    return path
+  }
+  /**
+   * Calls the GitLab API on a `projects/` path, validating JSON output when a schema is provided
+   * or returning raw CLI output (such as raw files) when omitted.
+   * @throws CliError with GitLab's HTTP status as `code` on failure.
+   */
+  async gitlabApi<T>(schema: z.ZodType<T>, path: string, ...flags: string[]): Promise<T>
+  async gitlabApi(path: string, ...flags: string[]): Promise<string>
+  async gitlabApi<T>(schema: z.ZodType<T> | string, ...rest: string[]): Promise<T | string> {
+    const { cli, host } = this.gitlabTarget()
+    if (typeof schema === 'string') return this.run(cli, ['api', this.gitlabPath(schema), '--hostname', host, ...rest])
+    const [path = '', ...flags] = rest
+    return schema.parse(JSON.parse(await this.run(cli, ['api', this.gitlabPath(path), '--hostname', host, ...flags])))
+  }
+  /** Fetches all pages of a GitLab API list as ndjson, skipping lines that do not parse and items that fail schema validation. */
+  async gitlabPages<T>(item: z.ZodType<T>, path: string, tally?: Tally): Promise<T[]> {
+    const { cli, host } = this.gitlabTarget()
+    const output = await this.run(cli, ['api', this.gitlabPath(path), '--hostname', host, '--paginate', '--output', 'ndjson'])
+    const values = output.split('\n').flatMap(line => {
+      const json = line.trim()
+      try { return json ? [JSON.parse(json) as unknown] : [] } catch { return [] /* Non-JSON ndjson lines are skipped without counting. */ }
+    })
+    return validItems(item, values, tally)
+  }
   /** Runs `git` on PATH using the agent's isolated git environment and credential helper. */
   async git(args: string[], cwd: string): Promise<string> { return this.run('git', args, cwd) }
 }

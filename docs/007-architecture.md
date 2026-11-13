@@ -278,7 +278,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 
 - Outbox applies the Feishu chat word limit.
 - `src/app/links.ts` resolves Feishu message links and `repliedTo`. It and Runtime read settings with `feishuSettings`.
-- `src/app/resources.ts` reads the `feishu/` and `github/` originals; `src/app/cards.ts` uses `pullOf` for Ticket cards.
+- `src/app/resources.ts` reads the `feishu/`, `github/` and `gitlab/` originals; `src/app/cards.ts` uses `pullOf` and `mrOf` for Ticket cards.
 - Runtime sends `pullEndNotices` for merged or closed Tickets.
 - Executor tools bind reported pull requests with `readPull` and `claimPull`, using the GitHub context exposed by Runtime.
 - MasterAssessor reads repository files with `readRepositoryPath`.
@@ -367,6 +367,11 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/sources/github-pull.ts` | The pull request rules: which pull requests a Ticket follows (`claimPull`, `observePull`), the closes it reports to the Engine, and `pullEndNotices`, the chat notice of a Ticket that ended merged or closed |
 | `src/sources/github-channel.ts` | The GitHub Channel: comments and review thread replies, `sent` or `gone` |
 | `src/sources/github-read.ts` | CI snapshots, repository reads, the `github/` resources, and `githubThreadContext`: an Issue's or pull request's conversation by page |
+| `src/sources/gitlab.ts` | The GitLab kind and plugin entry, exported as `./gitlab-watch`: a poll round over the watched Projects' Issues, merge requests and notes, the pipelines of open Tickets' merge requests and of the default branches, and subscribed Threads |
+| `src/sources/gitlab-trigger.ts` | GitLab notes, Issue and merge request bodies and pipeline states as Triggers, and GitLab addresses and thread keys |
+| `src/sources/gitlab-mr.ts` | The merge request rules in the execution project: which merge requests a Ticket follows (`claimMr`, `observeMr`), the closes it reports to the Engine, and `mrEndNotices`, the chat notice of a Ticket that ended merged or closed |
+| `src/sources/gitlab-channel.ts` | The GitLab Channel: notes and discussion replies, `sent` or `gone` |
+| `src/sources/gitlab-read.ts` | Pipeline snapshots, the `gitlab/` resources, and `gitlabThreadContext`: an Issue's or merge request's conversation by page |
 | `src/sources/feishu.ts` | The Feishu kind and plugin entry, exported as `./feishu-watch` |
 | `src/sources/feishu-trigger.ts` | Feishu messages as Triggers, by one rule for live events, history pages and topic pages |
 | `src/sources/feishu-loops.ts` | The Feishu loops: the event consumer, history recovery, chat names and polling of subscribed topics |
@@ -403,7 +408,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/client/locales.ts` | All copy in both languages, and the glossary of [001 Domain model](001-domain.md) |
 | `src/client/client.css`, `css.d.ts` | The panel's stylesheet, loaded as text |
 
-`src/sources/github.ts`, `src/sources/feishu.ts` and `src/sources/plane.ts` are also the entries of the three Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch`, `./feishu-watch` and `./plane-watch`. The bundle's `cordis.patch.yml` inserts the four plugins, with Feishu and Plane disabled.
+`src/sources/github.ts`, `src/sources/gitlab.ts`, `src/sources/feishu.ts` and `src/sources/plane.ts` are also the entries of the Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch`, `./gitlab-watch`, `./feishu-watch` and `./plane-watch`. The bundle's `cordis.patch.yml` inserts the five plugins, with GitLab, Feishu and Plane disabled.
 
 ## Tests
 
@@ -416,6 +421,10 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, the pull request rules, health |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
 | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
+| `tests/gitlab-trigger.spec.ts` | GitLab identities, addresses and Trigger constructors |
+| `tests/gitlab-read.spec.ts` | The `gitlab/` resources, pipeline snapshots and the Thread context |
+| `tests/gitlab-mr.spec.ts` | The merge request rules: claiming, observing and the end notices |
+| `tests/gitlab-source.spec.ts` | The GitLab Source on a `SourceContext`: schema, scope, environment variables, the poll round and the retry window |
 | `tests/plane.spec.ts` | The Plane Source on a `SourceContext`: webhook verification and status codes, trigger normalization and deduplication, the scope, the Channel's idempotency and `gone`, thread context, the member-name refresh, and the MCP adapter |
 | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |
 | `tests/assessment.spec.ts` | What the MasterAssessor keeps per Eval, and when it lets go |
@@ -569,7 +578,7 @@ Ticket cards use the closed `TICKET_STATES` set from `src/app/cards.ts`: an open
 | `settings`, `settings/<block>` | Revisions and summaries, or a complete block ready to save |
 | `prompts`, `prompts/<revision>`, `prompts/current`, `prompts/defaults`, `prompt-preview/<id>` | Prompt configurations and composed text |
 | `models`, `models/<provider>` | Available models |
-| `feishu/<trigger id>/…`, `github/…`, `plane/<trigger id>/…` | Original Source records, described in the Source skills |
+| `feishu/<trigger id>/…`, `github/…`, `gitlab/…`, `plane/<trigger id>/…` | Original Source records, described in the Source skills |
 
 Ticket Threads are marked `context` for context-only follows and `bound` for Source bindings. Assignment pages are newest first and include report previews. Continue lists with `next_offset`. `/input/<id>` accepts an Input's name or id. `settings` includes small blocks in full and summarizes Policy and Source blocks.
 

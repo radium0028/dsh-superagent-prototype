@@ -28,8 +28,10 @@ export interface SetupState {
   feishuProblem?: SetupProblem | undefined
   /** Plane account check failure (secret unset, or the MCP connection is down). */
   planeProblem?: SetupProblem | undefined
+  /** GitLab CLI or project check failure that pauses only the GitLab Source. */
+  gitlabProblem?: SetupProblem | undefined
 }
-export const problemOf = (id: string, setup: SetupState) => [setup.problem, setup.feishuProblem, setup.planeProblem].find(problem => problem?.place === id)
+export const problemOf = (id: string, setup: SetupState) => [setup.problem, setup.feishuProblem, setup.gitlabProblem, setup.planeProblem].find(problem => problem?.place === id)
 /** Source lifecycle state in priority order: missing kind, disabled, setup/part error, blocked on global setup, starting, paused, or ready. */
 export type SourceState = 'missing' | 'off' | 'error' | 'setup' | 'starting' | 'paused' | 'ready'
 function sourceState(instance: SourceInstance & { installed: boolean }, parts: { state: string }[], setup: SetupState): SourceState {

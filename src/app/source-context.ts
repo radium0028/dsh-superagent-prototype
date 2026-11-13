@@ -24,6 +24,8 @@ export interface SourceContextDeps {
   readonly feishuProblem?: SetupProblem | undefined
   /** Why setup found no Plane account (secret unset, or the MCP connection is down). */
   readonly planeProblem?: SetupProblem | undefined
+  /** Why setup found no working GitLab CLI even though the GitLab Source names one. */
+  readonly gitlabProblem?: SetupProblem | undefined
   /** Hands a Trigger to the Engine and schedules the pass that assesses it. */
   receive(trigger: Trigger): ReceiveResult | Promise<ReceiveResult>
 }
@@ -40,7 +42,7 @@ export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; h
     commands: deps.commands,
     ready: deps.ready,
     configured: () => deps.configured(),
-    get problem() { return [deps.feishuProblem, deps.planeProblem, deps.setupProblem].find(problem => problem?.place === kind.kind) },
+    get problem() { return [deps.feishuProblem, deps.gitlabProblem, deps.planeProblem, deps.setupProblem].find(problem => problem?.place === kind.kind) },
     config: <C extends Record<string, unknown>>(id: string) => {
       const instance = deps.sources.instance<C>(id)
       return instance?.enabled ? instance.config : undefined

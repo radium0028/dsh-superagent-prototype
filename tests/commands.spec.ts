@@ -5,6 +5,8 @@ import { feishuKind } from '../src/sources/feishu.ts'
 import { feishuChannel } from '../src/sources/feishu-trigger.ts'
 import { githubKind } from '../src/sources/github.ts'
 import { githubChannel } from '../src/sources/github-trigger.ts'
+import { gitlabChannel, NoteSchema } from '../src/sources/gitlab-trigger.ts'
+import { gitlabLink, sendGitlab } from '../src/sources/gitlab-channel.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import { SettingsSchema } from '../src/policy.ts'
 import { key, type OutboundMessage } from '../src/core/index.ts'
@@ -158,6 +160,129 @@ describe('GitHub calls', () => {
     expect(tally).toEqual({ skipped: 1 })
     run.mockResolvedValue('{"message":"not a list"}')
     await expect(value.pages(z.looseObject({ id: z.number() }), 'issues/12/comments')).rejects.toThrow()
+  })
+})
+describe('GitLab calls', () => {
+  const gitlab = { cli: '/path/agent-glab', host: 'gitlab.example.com', login: 'agent', email: 'agent@example.com', project: 'group/proj', projects: ['group/proj'] }
+  const gitlabDeployment = { ...testDeployment(), gitlab }
+  const commands = () => new Commands(() => gitlabDeployment, {}, new AbortController().signal)
+  it('go only to projects/ API paths on the configured host, and validate what GitLab answers', async () => {
+    const value = commands()
+    const run = vi.spyOn(value, 'run').mockResolvedValue('{"id":7,"username":"agent"}')
+    expect(await value.gitlabApi(z.looseObject({ id: z.number() }), 'projects/g%2Fp/issues?state=all', '-f', 'state=all'))
+      .toEqual({ id: 7, username: 'agent' })
+    expect(run).toHaveBeenLastCalledWith('/path/agent-glab',
+      ['api', 'projects/g%2Fp/issues?state=all', '--hostname', 'gitlab.example.com', '-f', 'state=all'])
+    await expect(value.gitlabApi(z.looseObject({ id: z.string() }), 'projects/g%2Fp/issues?state=all')).rejects.toThrow()
+    for (const path of ['user', '/projects/x', 'projects/../x', 'projects/x/../../y', 'https://x', '']) {
+      await expect(value.gitlabApi(z.unknown(), path)).rejects.toThrow('GitLab calls are restricted to the configured projects')
+    }
+    expect(run).toHaveBeenCalledTimes(2)
+    // Without a schema, gitlabApi returns the raw CLI stdout; dots inside a path segment are no traversal.
+    run.mockResolvedValue('raw file')
+    expect(await value.gitlabApi('projects/g%2Fp/repository/files/README.md/raw?ref=main', '-H', 'Accept: application/json')).toBe('raw file')
+    expect(run).toHaveBeenLastCalledWith('/path/agent-glab',
+      ['api', 'projects/g%2Fp/repository/files/README.md/raw?ref=main', '--hostname', 'gitlab.example.com', '-H', 'Accept: application/json'])
+  })
+  it('read every ndjson page of a list, and skip lines that do not parse and count items that do not validate', async () => {
+    const value = commands()
+    const run = vi.spyOn(value, 'run').mockResolvedValue('{"id":1}\n{"id":"two"}\nnot json\n\n{"id":2}\n')
+    const tally = { skipped: 0 }
+    expect(await value.gitlabPages(z.looseObject({ id: z.number() }), 'projects/g%2Fp/issues/12/notes', tally)).toEqual([{ id: 1 }, { id: 2 }])
+    expect(run).toHaveBeenLastCalledWith('/path/agent-glab',
+      ['api', 'projects/g%2Fp/issues/12/notes', '--hostname', 'gitlab.example.com', '--paginate', '--output', 'ndjson'])
+    expect(tally).toEqual({ skipped: 1 })
+  })
+  it('refuse GitLab commands when the deployment has no GitLab CLI', async () => {
+    const value = new Commands(() => testDeployment(), {}, new AbortController().signal)
+    await expect(value.gitlabApi(z.unknown(), 'projects/g%2Fp/issues')).rejects.toThrow('The GitLab Source has no working glab CLI')
+    await expect(value.gitlabPages(z.unknown(), 'projects/g%2Fp/issues')).rejects.toThrow('The GitLab Source has no working glab CLI')
+  })
+})
+describe('GitLab channel', () => {
+  const gitlab = { cli: '/path/agent-glab', host: 'gitlab.example.com', login: 'agent', email: 'agent@example.com', project: 'group/proj', projects: ['group/proj'] }
+  const gitlabDeployment = { ...testDeployment(), gitlab }
+  const commands = () => new Commands(() => gitlabDeployment, {}, new AbortController().signal)
+  const message = (channel: OutboundMessage['channel']): OutboundMessage => ({ ...reply, channel })
+  it('posts an Issue note as a raw-field body carrying the idempotency marker', async () => {
+    const value = commands()
+    vi.spyOn(value, 'gitlabPages').mockResolvedValue([])
+    const run = vi.spyOn(value, 'run').mockResolvedValue('{}')
+    await sendGitlab({ commands: value }, message(gitlabChannel('group/proj', 12, 'issue')))
+    expect(run).toHaveBeenCalledWith('/path/agent-glab', ['api', 'projects/group%2Fproj/issues/12/notes', '--hostname', 'gitlab.example.com',
+      '--method', 'POST', '-f', 'body=Done\n\n<!-- dsh-superagent:stable-operation -->'])
+  })
+  it('post a merge request note on the conversation, or inside its discussion thread', async () => {
+    const value = commands()
+    vi.spyOn(value, 'gitlabPages').mockResolvedValue([])
+    const run = vi.spyOn(value, 'run').mockResolvedValue('{}')
+    await sendGitlab({ commands: value }, message(gitlabChannel('group/proj', 34, 'mr')))
+    expect(run.mock.calls[0]![1]).toEqual(['api', 'projects/group%2Fproj/merge_requests/34/notes', '--hostname', 'gitlab.example.com',
+      '--method', 'POST', '-f', expect.stringContaining('Done')])
+    await sendGitlab({ commands: value }, message(gitlabChannel('group/proj', 34, 'mr', 'abc123')))
+    expect(run.mock.calls[1]![1]).toEqual(['api', 'projects/group%2Fproj/merge_requests/34/discussions/abc123/notes', '--hostname',
+      'gitlab.example.com', '--method', 'POST', '-f', 'body=Done\n\n<!-- dsh-superagent:stable-operation -->'])
+  })
+  it('recover a discussion from a retained trigger URL, while the structured address wins when they disagree', async () => {
+    const value = commands()
+    vi.spyOn(value, 'gitlabPages').mockResolvedValue([])
+    const run = vi.spyOn(value, 'run').mockResolvedValue('{}')
+    const channel = gitlabChannel('group/proj', 34, 'mr')
+    const withUrl = (url: string): OutboundMessage['channel'] => ({ ...channel, address: { ...channel.address, url } })
+    await sendGitlab({ commands: value }, message(withUrl('https://gitlab.example.com/group/proj/-/merge_requests/34#note_56')))
+    expect(run.mock.calls[0]![1]).toEqual(['api', 'projects/group%2Fproj/merge_requests/34/discussions/56/notes', '--hostname',
+      'gitlab.example.com', '--method', 'POST', '-f', expect.stringContaining('Done')])
+    await sendGitlab({ commands: value }, message(withUrl('https://gitlab.example.com/group/proj/-/issues/12#note_56')))
+    expect(run.mock.calls[1]![1]).toEqual(['api', 'projects/group%2Fproj/merge_requests/34/notes', '--hostname', 'gitlab.example.com',
+      '--method', 'POST', '-f', expect.stringContaining('Done')])
+  })
+  it('reconcile an uncertain GitLab send with its stable marker on the agent\'s own notes only', async () => {
+    const value = commands()
+    const note = (username: string): z.infer<typeof NoteSchema> => ({ id: 1, body: '<!-- dsh-superagent:stable-operation -->',
+      author: { id: 9, username }, created_at: '2026-01-01T00:00:00Z' })
+    const pages = vi.spyOn(value, 'gitlabPages').mockResolvedValue([note('agent'), note('someone-else')])
+    const run = vi.spyOn(value, 'run')
+    expect(await sendGitlab({ commands: value }, message(gitlabChannel('group/proj', 12, 'issue')))).toBe('sent')
+    expect((pages.mock.calls[0] as unknown[])[1]).toBe('projects/group%2Fproj/issues/12/notes?per_page=100')
+    expect(run).not.toHaveBeenCalled()
+    // A marker under another account's name does not reconcile, so the agent posts its own note.
+    pages.mockResolvedValue([note('someone-else')])
+    run.mockResolvedValue('{}')
+    await sendGitlab({ commands: value }, message(gitlabChannel('group/proj', 12, 'issue')))
+    expect(run).toHaveBeenCalledWith('/path/agent-glab', ['api', 'projects/group%2Fproj/issues/12/notes', '--hostname', 'gitlab.example.com',
+      '--method', 'POST', '-f', expect.stringContaining('stable-operation')])
+  })
+  it('drop a GitLab reply whose target is deleted or locked, and keep other failures for a retry', async () => {
+    const value = commands()
+    vi.spyOn(value, 'gitlabPages').mockResolvedValue([])
+    const api = vi.spyOn(value, 'gitlabApi')
+    for (const stderr of ['glab: Not Found (HTTP 404)', 'glab: 403 Forbidden - the merge request is locked (HTTP 403)']) {
+      api.mockRejectedValueOnce(commandError({ stderr, code: 1 }))
+      expect(await sendGitlab({ commands: value }, message(gitlabChannel('group/proj', 12, 'issue')))).toBe('gone')
+    }
+    api.mockRejectedValueOnce(commandError({ stderr: 'glab: Server Error (HTTP 500)', code: 1 }))
+    await expect(sendGitlab({ commands: value }, message(gitlabChannel('group/proj', 12, 'issue')))).rejects.toThrow('glab: Server Error (HTTP 500)')
+  })
+  it('refuse a reply with no working glab CLI or no GitLab target in its address', async () => {
+    const bare = new Commands(() => testDeployment(), {}, new AbortController().signal)
+    await expect(sendGitlab({ commands: bare }, message(gitlabChannel('group/proj', 12, 'issue'))))
+      .rejects.toThrow('The GitLab Source has no working glab CLI')
+    const value = commands()
+    await expect(sendGitlab({ commands: value },
+      message({ ...gitlabChannel('group/proj', 12, 'issue'), address: { kind: 'issue' } }))).rejects.toThrow('Missing GitLab reply target')
+  })
+  it('link each address to its GitLab page with its label', () => {
+    const links = { gitlab }
+    expect(gitlabLink(gitlabChannel('group/proj', 12, 'issue').address, links)).toEqual({ url: 'https://gitlab.example.com/group/proj/-/issues/12',
+      label: { zh: 'GitLab group/proj#12', en: 'GitLab group/proj#12' } })
+    expect(gitlabLink(gitlabChannel('group/proj', 34, 'mr').address, links)).toEqual({ url: 'https://gitlab.example.com/group/proj/-/merge_requests/34',
+      label: { zh: 'GitLab group/proj!34', en: 'GitLab group/proj!34' } })
+    expect(gitlabLink(gitlabChannel('group/proj', 34, 'mr', 'abc123').address, links))
+      .toEqual({ url: 'https://gitlab.example.com/group/proj/-/merge_requests/34',
+        label: { zh: 'GitLab group/proj!34 的讨论', en: 'GitLab group/proj!34 (discussion)' } })
+    expect(gitlabLink(gitlabChannel('group/proj', 12, 'issue').address, {}).url).toBe('')
+    expect(gitlabLink({ ...gitlabChannel('group/proj', 12, 'issue').address, url: 'https://gitlab.example.com/group/proj/-/issues/12#note_7' }, {}))
+      .toMatchObject({ url: 'https://gitlab.example.com/group/proj/-/issues/12#note_7' })
   })
 })
 it('says how to add the bot to a chat when Feishu answers that it is not a member, and keeps the code', async () => {
