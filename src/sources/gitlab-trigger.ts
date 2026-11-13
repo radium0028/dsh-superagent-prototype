@@ -47,7 +47,9 @@ export type GitlabNote = z.infer<typeof NoteSchema>
 /** An Issue as the issues API returns it. */
 export const IssueSchema = z.looseObject({
   id: z.number(), iid: z.number(), title: z.string(), description: z.string().nullish(), state: z.string(), author: UserSchema,
-  created_at: z.string(), updated_at: z.string(), web_url: z.string(), labels: z.array(z.looseObject({ title: z.string() })).nullish(),
+  created_at: z.string(), updated_at: z.string(), web_url: z.string(),
+  // GitLab returns plain label names as strings unless `with_labels_details=true`, and label objects with it.
+  labels: z.array(z.union([z.string().transform(title => ({ title })), z.looseObject({ title: z.string() })])).nullish(),
 })
 export type GitlabIssue = z.infer<typeof IssueSchema>
 /** A merge request; it carries the Issue fields plus its branches, head commit, and lifecycle timestamps. */

@@ -51,7 +51,8 @@ export const PlaneAccountsSchema = z.object({ secret: z.string().trim().default(
 export const GitlabAccountsSchema = z.object({
   host: z.string().trim().regex(/^(?:[A-Za-z0-9][A-Za-z0-9.-]*)?$/).default(''),
   project: z.string().trim().regex(/^(?:[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*)?$/).default(''),
-  projects: z.array(z.string().trim().regex(/^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/)).default([]),
+  // The Source edits the watched projects as rows, so each one is a record with its path, as the Feishu chats are.
+  projects: z.array(z.object({ path: z.string().trim().regex(/^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/) }).strict()).default([]),
   cli: z.string().trim().default(''),
   agentEmail: z.string().trim().default(''),
 })
@@ -92,9 +93,15 @@ const GithubUser = z.object({ login: z.string().regex(/^[A-Za-z0-9-]+$/), id: z.
 const RepositoryAccess = z.object({ name: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/), push: z.boolean().nullable() })
 function parsed<T>(schema: z.ZodType<T>, text: string): T | undefined {
   let value: unknown
-  try { value = JSON.parse(text) } catch { return undefined /* Non-JSON output; the caller surfaces the setup failure. */ }
+  try { value = JSON.parse(jsonBody(text)) } catch { return undefined /* Non-JSON output; the caller surfaces the setup failure. */ }
   const result = schema.safeParse(value)
   return result.success ? result.data : undefined
+}
+
+/** glab may print notice banners before or after a command's JSON body, so parsing keeps only the braces' span. */
+function jsonBody(text: string): string {
+  const start = text.indexOf('{'), end = text.lastIndexOf('}')
+  return start < 0 || end <= start ? text : text.slice(start, end + 1)
 }
 /** Verify the agent's GitHub CLI identity and push access to the configured repository. */
 export async function resolveDeployment(machine: Machine, github: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<Deployment> {
@@ -173,18 +180,20 @@ export async function resolveGitlab(machine: Machine, gitlab: unknown, probe: Pr
   if (!user) throw new SetupError('gitlabAgentCliNoAccount')
   const access = async (repository: string) => {
     // The canonical project path comes from GitLab, so renamed projects still match incoming notifications.
-    const text = await probe([cli, 'api', `projects/${encodeURIComponent(repository)}`, '--hostname', accounts.host,
-      '--jq', '{path: .path_with_namespace, level: ((.permissions.project_access.access_level // .permissions.group_access.access_level) // 0)}']).catch((error: unknown) => {
-        throw new SetupError('gitlabProjectUnreadable', { account: user.username, repository, host: accounts.host, output: reason(error) })
-      })
-    const project = parsed(GitlabProjectAccess, text)
-    if (!project) throw new SetupError('gitlabProjectUnreported', { repository })
+    // glab api has no --jq filter, so the raw project JSON is parsed here instead.
+    const text = await probe([cli, 'api', `projects/${encodeURIComponent(repository)}`, '--hostname', accounts.host]).catch((error: unknown) => {
+      throw new SetupError('gitlabProjectUnreadable', { account: user.username, repository, host: accounts.host, output: reason(error) })
+    })
+    const raw = parsed(z.object({ path_with_namespace: z.string(), permissions: z.object({ project_access: z.object({ access_level: z.number() }).nullish(), group_access: z.object({ access_level: z.number() }).nullish() }).nullish() }), text)
+    const project = raw ? GitlabProjectAccess.safeParse({ path: raw.path_with_namespace, level: raw.permissions?.project_access?.access_level ?? raw.permissions?.group_access?.access_level ?? 0 }).data ?? undefined : undefined
+    if (!project) throw new SetupError('gitlabProjectUnreported', { repository, output: text.slice(0, 2000) })
     return project
   }
   const execution = await access(accounts.project)
   if (execution.level < 30) throw new SetupError('gitlabProjectReadOnly', { account: user.username, repository: execution.path })
   const projects = [execution.path]
-  for (const repository of accounts.projects.filter(name => name !== accounts.project)) {
+  // The stored rows carry a path each; the deployment keeps the paths alone.
+  for (const repository of accounts.projects.map(row => row.path).filter(path => path !== accounts.project)) {
     // Watched projects only need read access; any probe failure there is one unreadable-project problem.
     const watched = await access(repository).catch(() => { throw new SetupError('gitlabWatchUnreadable', { account: user.username, repository, host: accounts.host }) })
     if (watched.level < 20) throw new SetupError('gitlabWatchUnreadable', { account: user.username, repository, host: accounts.host })

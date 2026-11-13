@@ -46,7 +46,7 @@ export const gitlabKind: SourceKind<GitlabConfig> = {
       hint: { zh: '完整项目路径，可含子群组。智能体在这里开合并请求、执行工单；保存时检查智能体账号能否推送它，然后重启 dsh-superagent。', en: 'The full project path, with subgroups as needed. The agent opens its merge requests and runs tickets here; saving checks that the agent account can push to it, then restarts dsh-superagent.' } },
     { key: 'projects', type: 'rows', label: { zh: '其余监听项目', en: 'Other watched projects' },
       hint: { zh: '执行项目之外只监听不执行的项目路径；这些项目只需智能体账号可读。', en: 'Paths of projects that are only listened to, not executed in; the agent account needs read access to them.' },
-      columns: [{ key: 'path', type: 'text', label: { zh: '项目路径', en: 'Project path' }, pattern: '[A-Za-z0-9_.\\-]+(/\\[A-Za-z0-9_.\\-]+)*' }] },
+      columns: [{ key: 'path', type: 'text', label: { zh: '项目路径', en: 'Project path' }, pattern: '[A-Za-z0-9_.\\-]+(/[A-Za-z0-9_.\\-]+)*' }] },
     { key: 'cli', type: 'text', label: { zh: '智能体的 GitLab CLI', en: 'Agent GitLab CLI' },
       hint: { zh: '命令名或绝对路径，通常是用 GITLAB_CONFIG_DIR 登录智能体账号的 glab 包装脚本。智能体以它登录的账号行事，执行器以 glab 调用它。保存时检查它登录的账号能否推送执行项目，然后重启 dsh-superagent。', en: 'A command name or absolute path, usually a glab wrapper signed in to the agent account. The agent acts as the account it is signed in to, and the Executor calls it as glab. Saving checks that this account can push to the execution project, then restarts dsh-superagent.' } },
     { key: 'agentEmail', type: 'text', label: { zh: '提交邮箱', en: 'Commit email' }, advanced: true,

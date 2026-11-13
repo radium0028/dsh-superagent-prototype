@@ -87,7 +87,7 @@ async function start() {
     [`${BOT} api GET /open-apis/bot/v3/info --as bot --format ndjson`]: '{"bot":{"open_id":"ou_bot"},"code":0,"msg":"ok"}',
     ['git config -z --show-origin --get-all credential.https://github.com.helper']: `file:${workerGitConfig(directory)}\0${credentialHelper(AGENT)}\0`,
     [`${GLAB} api user --hostname gitlab.example.com`]: '{"id":9,"username":"glab-bot","commit_email":"glab-bot@example.com"}',
-    [`${GLAB} api projects/group%2Fproj --hostname gitlab.example.com --jq {path: .path_with_namespace, level: ((.permissions.project_access.access_level // .permissions.group_access.access_level) // 0)}`]: '{"path":"group/proj","level":30}\n',
+    [`${GLAB} api projects/group%2Fproj --hostname gitlab.example.com`]: '{"path_with_namespace":"group/proj","permissions":{"project_access":{"access_level":30}}}\n',
     ['git config -z --show-origin --get-all credential.https://gitlab.example.com.helper']: `file:${workerGitConfig(directory)}\0${credentialHelper(GLAB)}\0`,
     ['git config -z --show-scope --get-regexp ^(credential\\..*|http\\..*extraheader)$']:
       `global\0credential.helper\n\0global\0credential.https://github.com.helper\n${credentialHelper(AGENT)}\0`,
