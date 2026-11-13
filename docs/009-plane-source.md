@@ -257,6 +257,10 @@ Plane 的 webhook 载荷里没有"谁被 @ 了"，所以必须由运维决定什
 3. 通过 MCP 读这条评论，在 `comment_html` 里找 mention 标记（Plane 会把被提及用户的 id 渲染进去）。最准确，
    但每个事件多一次工具调用。
 
+**规则 3 已启用（2026-11-13）**：配置了 `mentionUser`（DevelopBot，`718e1e32-1b0f-42b4-bf3c-7daa2efe492d`）后，只有
+评论 HTML 里 @ 该用户的评论才算明确请求（`addressed: mention`，标记从 `data-mention-id` 识别）；其余评论不指向
+智能体，最多在 `listen: all` 的项目里成为推断候选。留空则回到规则 1。
+
 在规则 1 下，**不在** `allowed` 名单里的人发的评论，如果其项目设为监听 `all`，仍然会被观察，由准入表决定它能否
 成为推断出来的候选——与 Feishu Source 的两步机制相同。无论用哪条规则，`addressed` 都只在评论确实指向智能体时才设置。
 
