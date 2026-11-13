@@ -28,3 +28,8 @@
 
 - 2026-11-13 补充：frpc 已由运维配置并重载——remote_port 用 **13082**（12089 段内冲突），local_port 仍 3090。
   dsj5 nginx 的反代目标相应改为 `http://127.0.0.1:13082/plane/webhook`，文档 009 已同步。
+
+- 2026-11-13 frpc 修复并验证全链路：运维首次追加用的是 TOML `[[proxies]]` 段，而 frpc.toml 全文件是 INI 格式
+  （`[common]`…），INI 解析器静默忽略该段，代理从未注册。已改写为 INI `[plane-webhook]`（备份 /tmp/frpc.toml.bak，
+  `frpc verify` 通过），运维重启 frpc 后经 dsj5-tunnel ssh 转发实测：dsj5 回环 13082 → frp → 本机 3090 →
+  接收端回 `HTTP 403 Invalid signature`（未签名请求被正确拒绝）。入站链路只剩 dsj5 nginx 的 /plane-hook 反代。
