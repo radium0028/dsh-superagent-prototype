@@ -156,10 +156,16 @@ export async function resolveFeishuBot(machine: Machine, feishu: unknown, probe:
  * connection itself is down). The API key stays in the MCP connection's env — it never enters the settings page.
  */
 const McpServerSchema = z.string().trim().regex(/^[a-z][a-z0-9_-]*$/, 'lowercase namespace').default('plane')
-export function resolvePlane(plane: unknown, tools: { get(name: string): unknown }): PlaneAccount {
+export async function resolvePlane(plane: unknown, tools: { get(name: string): unknown }): Promise<PlaneAccount> {
   const { secret, mcpServer } = z.object({ secret: z.string().trim().default(''), mcpServer: McpServerSchema }).parse(plane ?? {})
   if (!secret) throw new SetupError('planeSecretUnset')
-  if (!tools.get(`mcp__${mcpServer}__workitem`)) throw new SetupError('planeMcpUnavailable')
+  // The MCP connector activates asynchronously, so a boot-time setup check can run before its tools register;
+  // poll briefly before declaring the connection down (the probe's own health covers a genuine outage later).
+  for (let attempt = 0; attempt < 20; attempt++) {
+    if (tools.get(`mcp__${mcpServer}__workitem`)) return { secret, mcpServer }
+    await new Promise(resolve => setTimeout(resolve, 250))
+  }
+  throw new SetupError('planeMcpUnavailable')
   return { secret, mcpServer }
 }
 const GitlabUser = z.object({ id: z.number().int().positive(), username: z.string().regex(/^[A-Za-z0-9_.-]+$/), commit_email: z.string().nullish(), email: z.string().nullish() })
