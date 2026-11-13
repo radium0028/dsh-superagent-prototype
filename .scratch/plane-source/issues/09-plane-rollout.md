@@ -40,3 +40,12 @@
   Trigger 落库 → 评估经 MCP 读到工作项上下文 → 按策略正确忽略测试评论（decision reason 引用了工作项内容）。
   待真实工作请求（匹配 copy/visual 规则的评论）验证 工单+回评 最后一环；member list 接口限流较紧（名单显示
   用 UUID 兜底），稍后再 Sync。启动竞态误报 planeMcpUnavailable 已修（resolvePlane 轮询 5s）。
+
+- 2026-11-13 深夜 连环修复 GitLab 触发中断（用户报告"收不到触发"）：
+  ① c7bdcc5：pollProject 对 agent 自著条目 sameName→continue 连评论一起跳过，且该类 MR 常无订阅线程，
+    人写的评论永久不可见（实证：startingb!7 的 19:27 评论）。改为仅挡条目级 trigger，评论照读。修复后靠
+    边界条目每轮重列的机制自动找回了被吞的评论。
+  ② f8607d4：tsdown 把 infra/commands 复制进两个 chunk，CliError 类存在两份，跨 chunk instanceof 恒
+    false——pipelines/latest 的 403（该 token 对全部项目被拒，本应按空快照吞掉）逃逸成每轮失败。
+    改用 Symbol.for 品牌判别（isCliError），全仓替换 instanceof CliError。
+  诊断手法：给 lib 里 Commands.run 打临时探针抓真实 argv；模拟整轮 42 连发定位 403 端点。
