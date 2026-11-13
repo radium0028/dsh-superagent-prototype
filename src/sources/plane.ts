@@ -199,7 +199,13 @@ export function apply(ctx: Context, deps: PlaneApplyDeps = {}): void {
           const trigger = settings.workItemCreated
             ? planeTrigger(payload, self.id) ?? workItemTrigger(payload, self.id)
             : planeTrigger(payload, self.id)
-          if (!trigger || trigger.id !== planeTriggerId(eventId)) return { status: 202, reason: 'ignored' }
+          if (!trigger || trigger.id !== planeTriggerId(eventId)) {
+            // A dialect the translator does not know must be visible, not a silent 202.
+            const seen = payload as { event?: unknown; action?: unknown; data?: unknown }
+            ctx.logger.info('plane webhook ignored: event=%s action=%s data_keys=%s', String(seen.event), String(seen.action ?? ''),
+              Object.keys((seen.data as Record<string, unknown>) ?? {}).join(','))
+            return { status: 202, reason: 'ignored' }
+          }
           await context.receive(trigger)
           return { status: 202, reason: 'stored' }
         })

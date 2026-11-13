@@ -36,6 +36,16 @@ const commentEvent = (overrides: Record<string, unknown> = {}): Record<string, u
   ...overrides,
 })
 
+/** The same comment as the deployed (pre-v2) Plane posts it: `issue_comment` + action, `data` is the comment itself. */
+const v1CommentEvent = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+  event_id: EVENT_ID, event: 'issue_comment', action: 'created', webhook_id: 'wh-1', workspace_id: 'ws-1',
+  entity_type: 'issue_comment',
+  data: { id: 'cm-v1', issue: WORK_ITEM, project: PROJECT, workspace: 'ws-1', actor: MEMBER,
+    comment_html: '<p class="editor-paragraph-block">请修一下</p>', attachments: [], access: 'INTERNAL',
+    external_source: null, external_id: null, edited_at: null, created_at: '2026-11-13T09:29:40.446708Z' },
+  ...overrides,
+})
+
 function host(overrides: Partial<SourceContextDeps> = {}) {
   const store = new Store(join(mkdtempSync(join(tmpdir(), 'plane-')), 'db.sqlite'))
   const settings = SettingsSchema.parse({ policy: { sources: { plane: { allowed: [{ id: MEMBER, name: 'Alice' }] } } },
@@ -142,6 +152,32 @@ describe('plane webhook', () => {
     const unknown = await deliver(h, commentEvent({ event: 'workitem.vote.created', event_id: 'unknown-1' }))
     expect(unknown.status).toBe(202)
     expect(h.receive).not.toHaveBeenCalled()
+  })
+  it('accepts the pre-v2 dialect: issue_comment + action with the comment as data, HTML reduced to text', async () => {
+    const h = host()
+    const first = await deliver(h, v1CommentEvent())
+    expect(first.status).toBe(202)
+    expect(h.receive).toHaveBeenCalledTimes(1)
+    const trigger = h.receive.mock.calls[0]![0] as Trigger
+    expect(trigger).toMatchObject({ id: key('plane', EVENT_ID), source: 'plane', actor: { source: 'plane', id: MEMBER },
+      human: true, addressed: 'direct', text: '请修一下',
+      channel: { source: 'plane', address: { projectId: PROJECT, workItemId: WORK_ITEM, commentId: 'cm-v1' } } })
+    expect(trigger.at).toBe('2026-11-13T09:29:40.446Z')
+    // The dotted v1 spelling and the comment-enum spelling normalize to the same trigger kind.
+    await deliver(h, v1CommentEvent({ event: 'issue_comment.created', event_id: 'v1b-dotted' }))
+    expect(h.receive.mock.calls[1]![0]).toMatchObject({ id: key('plane', 'v1b-dotted'), text: '请修一下' })
+    await deliver(h, commentEvent({ event: 'WebhookScope.ScopeChoices.WORK_ITEM_COMMENT_CREATED', event_id: 'enum-comment-1' }))
+    expect(h.receive.mock.calls[2]![0]).toMatchObject({ id: key('plane', 'enum-comment-1'), text: '请修一下' })
+  })
+  it('drops its own replies in the pre-v2 dialect by external_source, guarding the reply loop', async () => {
+    const h = host()
+    const own = await deliver(h, v1CommentEvent({ data: { ...v1CommentEvent().data as Record<string, unknown>, actor: SELF,
+      external_source: 'dsh-superagent', external_id: 'msg-1' } }))
+    expect(own.status).toBe(202)
+    expect(h.receive).not.toHaveBeenCalled()
+    // A foreign integration's comments are not the agent's own and still arrive.
+    await deliver(h, v1CommentEvent({ data: { ...v1CommentEvent().data as Record<string, unknown>, external_source: 'zendesk' } }))
+    expect(h.receive).toHaveBeenCalledTimes(1)
   })
   it('drops the agent\'s own comments: no reply loop', async () => {
     const h = host()

@@ -1,10 +1,14 @@
 /**
- * Normalizes Plane workspace webhook v2 payloads into domain Triggers.
+ * Normalizes Plane workspace webhook payloads into domain Triggers.
  *
- * Plane sends dotted event names (`workitem.comment.created`) but its own documentation shows Python enum members
- * (`WebhookScope.ScopeChoices.WORK_ITEM_UPDATED`), so both forms are accepted. The comment payload carries only
- * `comment_stripped` (plain text); there is no comment_html to inspect, which is why rule 1 (any comment by a listed
- * member is an explicit request) is the default trigger rule.
+ * Two payload dialects arrive, because the deployed Plane version predates webhook v2: the v2 shape (dotted
+ * `workitem.comment.created`, `data` holding the work item with a nested `comment`) and the v1 shape (event
+ * `issue_comment` with a top-level `action`, `data` being the comment object itself with `issue`/`project`/`actor`
+ * fields). Both are accepted; the envelope still requires `event_id`, so deduplication works across redeliveries.
+ *
+ * Plane's own documentation example also shows Python enum members (`WebhookScope.ScopeChoices.…`), so that form is
+ * normalized too. The v1 comment payload carries `comment_html` (no plain text), which is why rule 1 (any comment by
+ * a listed member is an explicit request) is the default trigger rule.
  */
 import { z } from 'zod'
 import { key, type ChannelRef, type Trigger } from '../core/index.ts'
@@ -18,9 +22,10 @@ export const planeChannel = (ref: PlaneIssueRef, commentId: string): ChannelRef 
 /** Deterministic trigger ID from the webhook event id: repeated deliveries of one event produce one Trigger. */
 export const planeTriggerId = (eventId: string): string => key(SOURCE, eventId)
 
-const CommentEventSchema = z.looseObject({
-  event_id: z.string().min(1),
-  event: z.string().min(1),
+/** The webhook envelope every dialect shares; the receiver already demands `event_id` before parsing reaches here. */
+const EnvelopeSchema = z.looseObject({ event_id: z.string().min(1), event: z.string().min(1), action: z.string().nullish() })
+/** v2 payload: `data` holds the work item and a nested `comment` object. */
+const V2CommentSchema = z.looseObject({
   workspace_id: z.string().nullish(),
   entity_type: z.string().nullish(),
   data: z.looseObject({
@@ -32,6 +37,21 @@ const CommentEventSchema = z.looseObject({
       actor_id: z.string().min(1),
       comment_stripped: z.string().default(''),
     }).nullish(),
+  }),
+})
+/** v1 payload: `data` is the comment object itself (`issue` and `project` instead of nested ids). */
+const V1CommentSchema = z.looseObject({
+  workspace_id: z.string().nullish(),
+  entity_type: z.string().nullish(),
+  data: z.looseObject({
+    id: z.string().min(1),
+    issue: z.string().min(1),
+    project: z.string().min(1),
+    actor: z.string().min(1),
+    comment_html: z.string().nullish(),
+    comment_stripped: z.string().nullish(),
+    created_at: z.string().nullish(),
+    external_source: z.string().nullish(),
   }),
 })
 /** A work-item event (created/updated/archived/deleted); `data` is the work item object itself. */
@@ -47,32 +67,71 @@ const WorkItemEventSchema = z.looseObject({
   }),
 })
 
-/** The dotted form of an event name, from either the dotted or the Python-enum form. */
-export function eventName(raw: string): string {
-  const dotted = /^workitem\.([a-z_]+)$/.exec(raw)
+/** The comment text: v2 delivers plain `comment_stripped`; v1 delivers only HTML, which is reduced to text. */
+export function planeText(comment: { comment_stripped?: string | null; comment_html?: string | null }): string {
+  if (comment.comment_stripped) return comment.comment_stripped
+  return (comment.comment_html ?? '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+/** The dotted form of an event name, from the dotted, Python-enum, or v1 (`issue_comment` + `action`) forms. */
+export function eventName(raw: string, action?: string): string {
+  const dotted = /^workitem\.[a-z_]+(\.[a-z_]+)?$/.exec(raw)
   if (dotted) return raw
-  // `WebhookScope.ScopeChoices.WORK_ITEM_UPDATED` → `workitem.updated` (comment events keep their full dotted path).
-  const enumed = /^WebhookScope\.ScopeChoices\.WORK_ITEM_([A-Z_]+)$/.exec(raw)
-  if (enumed) return `workitem.${enumed[1]!.toLowerCase()}`
+  // `WebhookScope.ScopeChoices.WORK_ITEM_COMMENT_CREATED` → `workitem.comment.created`; check the longer form first,
+  // or the work-item regex below would collapse it to `workitem.comment_created`.
   const commentEnumed = /^WebhookScope\.ScopeChoices\.WORK_ITEM_COMMENT_([A-Z_]+)$/.exec(raw)
   if (commentEnumed) return `workitem.comment.${commentEnumed[1]!.toLowerCase()}`
+  const enumed = /^WebhookScope\.ScopeChoices\.WORK_ITEM_([A-Z_]+)$/.exec(raw)
+  if (enumed) return `workitem.${enumed[1]!.toLowerCase()}`
+  // v1: `issue_comment.created`, or a bare `issue_comment` whose verb rides a top-level `action` field.
+  if (raw === 'issue_comment.created' || (raw === 'issue_comment' && action === 'created')) return 'workitem.comment.created'
   return raw
 }
 /** The agent's own Plane user id is fetched once (`member me`) and cached; its comments never become Triggers. */
 export function planeTrigger(input: unknown, selfId: string | undefined): Trigger | undefined {
-  const event = CommentEventSchema.parse(input)
-  const kind = eventName(event.event)
-  if (kind !== 'workitem.comment.created' || !event.data.comment) return
-  // The agent's own comments would otherwise loop: every reply arrives as a new comment event.
-  if (selfId && event.data.comment.actor_id === selfId) return
-  const ref: PlaneIssueRef = { projectId: event.data.project_id ?? '', workItemId: event.data.id }
-  const commentId = event.data.comment.id
-  return { id: planeTriggerId(event.event_id), source: SOURCE, threads: [{ source: SOURCE, id: `plane:${ref.projectId}:${ref.workItemId}` }],
-    actor: { source: SOURCE, id: event.data.comment.actor_id }, human: true, addressed: 'direct',
-    at: new Date().toISOString(), text: event.data.comment.comment_stripped,
-    channel: planeChannel(ref, commentId),
-    meta: { eventId: event.event_id, kind, projectId: ref.projectId, workItemId: ref.workItemId, commentId,
-      workItemName: event.data.name ?? '', workspaceId: event.workspace_id ?? '', entityType: event.entity_type ?? 'issue' } }
+  const payload = EnvelopeSchema.parse(input)
+  const kind = eventName(payload.event, payload.action ?? undefined)
+  if (kind !== 'workitem.comment.created') return
+
+  const v2 = V2CommentSchema.safeParse(input)
+  if (v2.success && v2.data.data.comment) {
+    const comment = v2.data.data.comment
+    // The agent's own comments would otherwise loop: every reply arrives as a new comment event.
+    if (selfId && comment.actor_id === selfId) return
+    const ref: PlaneIssueRef = { projectId: v2.data.data.project_id ?? '', workItemId: v2.data.data.id }
+    return { id: planeTriggerId(payload.event_id), source: SOURCE, threads: [{ source: SOURCE, id: `plane:${ref.projectId}:${ref.workItemId}` }],
+      actor: { source: SOURCE, id: comment.actor_id }, human: true, addressed: 'direct',
+      at: new Date().toISOString(), text: comment.comment_stripped,
+      channel: planeChannel(ref, comment.id),
+      meta: { eventId: payload.event_id, kind, projectId: ref.projectId, workItemId: ref.workItemId, commentId: comment.id,
+        workItemName: v2.data.data.name ?? '', workspaceId: v2.data.workspace_id ?? '', entityType: v2.data.entity_type ?? 'issue' } }
+  }
+
+  const v1 = V1CommentSchema.safeParse(input)
+  if (v1.success) {
+    const comment = v1.data.data
+    // The agent's own replies carry its `external_source`; that marker guards the reply loop even before the
+    // agent's own user id is known (the member probe may still be waiting out an API rate limit).
+    if (comment.external_source === 'dsh-superagent') return
+    if (selfId && comment.actor === selfId) return
+    const ref: PlaneIssueRef = { projectId: comment.project, workItemId: comment.issue }
+    const at = comment.created_at && Number.isFinite(Date.parse(comment.created_at))
+      ? new Date(Date.parse(comment.created_at)).toISOString() : new Date().toISOString()
+    return { id: planeTriggerId(payload.event_id), source: SOURCE, threads: [{ source: SOURCE, id: `plane:${ref.projectId}:${ref.workItemId}` }],
+      actor: { source: SOURCE, id: comment.actor }, human: true, addressed: 'direct',
+      at, text: planeText(comment),
+      channel: planeChannel(ref, comment.id),
+      meta: { eventId: payload.event_id, kind, projectId: ref.projectId, workItemId: ref.workItemId, commentId: comment.id,
+        workItemName: '', workspaceId: v1.data.workspace_id ?? '', entityType: v1.data.entity_type ?? 'issue_comment' } }
+  }
+  return
 }
 /** Converts a `workitem.created` event into a Trigger (actor is the creator); only used when `workItemCreated` is on. */
 export function workItemTrigger(input: unknown, selfId: string | undefined): Trigger | undefined {
