@@ -1,6 +1,6 @@
 # 03: 评论进、Ticket 开：webhook 接收端、Trigger 归一化与准入
 
-**What to build:** 人在 Plane 工作项下写一条评论，智能体就开出一张工单干活——整个接入的第一条完整路径。接收端挂在 DSH web server 的 `/plane/webhook` 上（方案 A，由反向代理对外暴露），验签、去重、过滤、落库语义全部就位。
+**What to build:** 人在 Plane 工作项下写一条评论，智能体就开出一张工单干活——整个接入的第一条完整路径。接收端是插件自己的 node:http 监听器（方案 B，默认 127.0.0.1:3090，frp 把一个公网端口映射到它；不改成挂 DSH web server 的方案 A，因为 frp 映射端口而非路径，映射 3082 会暴露管理面板），验签、去重、过滤、落库语义全部就位。
 
 **Blocked by:** 02（kind 注册与项目配置形状）
 
@@ -15,3 +15,10 @@
 - [x] 状态语义：被 scope 过滤的事件也回 2xx 并按 filtered 落库记原因；未知事件 2xx 忽略并计数；只有 Trigger 落库失败才回 5xx
 - [x] 验签失败记一次 health 告警
 - [x] 测试覆盖：验签矩阵、事件映射、去重、范围过滤、智能体自己的评论被丢弃
+## Comments
+
+- 2026-11-13：接收端从方案 A 改为方案 B（commit b45f99c）。原因：实际部署走 frp 端口映射（dsj5:12089 → 本机
+  127.0.0.1:3090），frp 映射整个端口而非路径，挂 webServer 会把 3082 管理面板一起暴露。watch 循环 5 秒重读绑定
+  目标，改 host/port 自动重绑；绑定失败报 error 并在下一 tick 重试；Source 关闭时停监听。新增配置
+  webhookHost/webhookPort（默认 127.0.0.1:3090）。附带修复：self 身份（API key 所有者）缓存进 KV.plane.self，
+  MCP 启动时不可用也不再丢失防环路保护；health 由接收端与 MCP 探针两个切片组合。19 个 plane 测试全绿。
