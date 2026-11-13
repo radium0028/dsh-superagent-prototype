@@ -1,7 +1,7 @@
 /** GitHub outbound channel: posts issue/PR comments and review thread replies under the agent account. */
 import { z } from 'zod'
 import type { OutboundMessage } from '../core/index.ts'
-import { CliError } from '../infra/commands.ts'
+import { isCliError } from '../infra/commands.ts'
 import { sameName } from '../infra/text.ts'
 import type { SourceContext } from './host.ts'
 import type { ChannelLink, ChannelLinks } from './kind.ts'
@@ -11,9 +11,9 @@ const CommentSchema = z.looseObject({
   id: z.number(), body: z.string().nullish(), in_reply_to_id: z.number().nullish(), user: z.looseObject({ login: z.string() }).nullish(),
 })
 /** True when an issue is permanently deleted (410) or locked (403); 404 is retried because it can indicate temporary permission loss on a private repo. */
-const gone = (error: unknown): boolean => error instanceof CliError
+const gone = (error: unknown): boolean => isCliError(error)
   && (error.code === 410 || (error.code === 403 && /locked/i.test(error.message)))
-const missing = (error: unknown): boolean => error instanceof CliError && (error.code === 404 || error.code === 410)
+const missing = (error: unknown): boolean => isCliError(error) && (error.code === 404 || error.code === 410)
 /** Posts a comment or review-thread reply with an embedded HTML marker so retries do not create duplicate comments. */
 export async function sendGithub(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'> {
   const { commands } = host

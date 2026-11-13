@@ -1,6 +1,6 @@
 /** Feishu outbound channel: posts threaded bot replies and constructs chat deep links. */
 import type { OutboundMessage } from '../core/index.ts'
-import { CliError } from '../infra/commands.ts'
+import { isCliError } from '../infra/commands.ts'
 import { checkedImText } from '../infra/text.ts'
 import type { SourceContext } from './host.ts'
 import type { ChannelLink, ChannelLinks } from './kind.ts'
@@ -13,7 +13,7 @@ export const feishuChatLink = (brand: 'feishu' | 'lark', chatId: string): string
  * True when Feishu permanently rejects a reply because the target message was recalled, withdrawn, or not found.
  * Only a Feishu response carrying one of these error codes means the target message is gone; timeouts or crashes do not.
  */
-const gone = (error: unknown): boolean => error instanceof CliError && error.code !== undefined && (error.code === 230011
+const gone = (error: unknown): boolean => isCliError(error) && error.code !== undefined && (error.code === 230011
   || /withdrawn/i.test(error.message) || (Math.floor(error.code / 100) === 2300 && /not found/i.test(error.message)))
 /** Replies in the topic of the target message; Feishu keeps at most one reply per idempotency key (the outgoing message's `message.id`). */
 export async function sendFeishu(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'> {

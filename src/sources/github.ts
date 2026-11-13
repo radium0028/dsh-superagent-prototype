@@ -3,7 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { key, type Thread } from '../core/index.ts'
 import { sameName } from '../infra/text.ts'
 import { GithubAccountsSchema } from '../deployment.ts'
-import { CliError, validItems, type Tally } from '../infra/commands.ts'
+import { isCliError, validItems, type Tally } from '../infra/commands.ts'
 import { ciCounts, ciFact, ciFailures, ciSummary, githubThreadContext, pullChecks } from './github-read.ts'
 import { branchCiTrigger, ciTrigger, commentTrigger, CommentSchema, githubAddress, issueTrigger, IssueSchema, pullTrigger, SOURCE }
   from './github-trigger.ts'
@@ -155,7 +155,7 @@ const stopped = (ctx: SourceContext, round: Round): boolean => !!round.signal?.a
 export interface Retry { since: string; pr: boolean; failedAt?: string; attempts?: number }
 const RETRY_WINDOW_MS = 24 * 3600_000
 /** True when GitHub returns HTTP 410 (Gone); HTTP 404 is retried because it can indicate revoked access to a private repository. */
-const deleted = (error: unknown): boolean => error instanceof CliError && error.code === 410
+const deleted = (error: unknown): boolean => isCliError(error) && error.code === 410
 /** Records a failed read on the Thread and in the round; deleted (410) or abandoned (24h+) threads do not fail the round. */
 function failed(ctx: SourceContext, round: Round, number: number, error: unknown, abandoned = false): void {
   if (deleted(error)) round.dropped.push(number)
@@ -213,7 +213,7 @@ async function readStream(ctx: SourceContext, round: Round, id: string, path: st
   const listed = `${path}&sort=updated&direction=asc&per_page=100&since=${encodeURIComponent(since)}`
   try { raw = await ctx.commands.withSignal(round.signal).api(listed, '--include', ...conditional) }
   catch (error) {
-    if (error instanceof CliError && error.code === 304) return
+    if (isCliError(error) && error.code === 304) return
     throw error
   }
   const { headers, body } = included(raw)

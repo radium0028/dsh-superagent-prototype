@@ -8,12 +8,22 @@ import type { Deployment } from '../deployment.ts'
 const exec = promisify(execFile)
 const TIMEOUT_MS = 90_000
 /**
+ * Brand marking CliError across bundler chunks. The bundle may duplicate this module into several chunks, so an
+ * `instanceof CliError` in one chunk is false for an error another chunk's copy threw; `Symbol.for` is process-global,
+ * which makes `isCliError` reliable wherever the class was instantiated.
+ */
+const CLI_ERROR = Symbol.for('dsh-superagent.cli-error')
+/**
  * Error thrown by Commands when a CLI invocation fails, capturing stderr diagnostics, API error codes, and exit status without echoing command arguments.
  * Source channels and pollers inspect its code to distinguish deleted conversations from retryable failures.
  */
 export class CliError extends Error {
+  readonly [CLI_ERROR] = true
   constructor(message: string, readonly code?: number, readonly exitCode?: number) { super(message) }
 }
+/** Reliable across duplicated bundler chunks, unlike `instanceof CliError`. */
+export const isCliError = (error: unknown): error is CliError =>
+  !!error && typeof error === 'object' && (error as { readonly [CLI_ERROR]?: boolean })[CLI_ERROR] === true
 /** Extracts a sanitized error from a failed subprocess without echoing argv, which may contain message text. */
 export function commandError(error: unknown, program = 'command'): Error {
   if (error instanceof Error && error.name === 'AbortError') return error

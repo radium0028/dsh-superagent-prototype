@@ -1,7 +1,7 @@
 /** GitLab outbound channel: posts Issue/MR notes and discussion replies under the agent account. */
 import { z } from 'zod'
 import type { OutboundMessage } from '../core/index.ts'
-import { CliError } from '../infra/commands.ts'
+import { isCliError } from '../infra/commands.ts'
 import { sameName } from '../infra/text.ts'
 import type { SourceContext } from './host.ts'
 import type { ChannelLink, ChannelLinks } from './kind.ts'
@@ -11,7 +11,7 @@ import { gitlabAddress, gitlabPage, NoteSchema, type GitlabNote } from './gitlab
  * True when the target no longer accepts replies: GitLab answers 404 for a deleted or inaccessible private Issue/MR alike,
  * and 403 with a locked message when the conversation is closed and locked. Everything else may succeed on a retry.
  */
-const gone = (error: unknown): boolean => error instanceof CliError
+const gone = (error: unknown): boolean => isCliError(error)
   && (error.code === 404 || (error.code === 403 && /locked/i.test(error.message)))
 /** Posts a note or discussion reply with an embedded HTML marker so retries do not create duplicate notes. */
 export async function sendGitlab(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'> {

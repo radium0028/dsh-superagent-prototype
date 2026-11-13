@@ -3,7 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { key, type Thread } from '../core/index.ts'
 import { sameName } from '../infra/text.ts'
 import { GitlabAccountsSchema } from '../deployment.ts'
-import { CliError, validItems, type Tally } from '../infra/commands.ts'
+import { isCliError, validItems, type Tally } from '../infra/commands.ts'
 import { gitlabThreadContext, pipelineCounts, pipelineFact, pipelineFailures, pipelineSnapshot, pipelineSummary } from './gitlab-read.ts'
 import { branchCiTrigger, ciTrigger, IssueSchema, isSystemNote, issueTrigger, MrSchema, mrTrigger, NoteSchema, noteTrigger,
   parseThread, SOURCE, threadKey, type GitlabIssue, type GitlabMr, type GitlabNote, type NoteRef } from './gitlab-trigger.ts'
@@ -147,7 +147,7 @@ export function pollFailure(failures: number, threshold: number, error: unknown)
   return failures >= threshold ? health('error', 'pollFailures', { count: String(failures), error: String(error) }) : undefined
 }
 /** True when GitLab answers HTTP 404, which it returns for a deleted or inaccessible private item alike. */
-const gone = (error: unknown): boolean => error instanceof CliError && error.code === 404
+const gone = (error: unknown): boolean => isCliError(error) && error.code === 404
 function account(ctx: SourceContext): { login: string; host: string; project: string; projects: string[] } {
   const gitlab = ctx.deployment.gitlab
   if (!gitlab) throw new Error('The GitLab Source has no working glab CLI')

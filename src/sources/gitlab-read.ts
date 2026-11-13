@@ -1,7 +1,7 @@
 /** Read-only GitLab project, conversation, and pipeline inspection for assessments and workers. */
 import { z } from 'zod'
 import type { ThreadFact } from '../core/index.ts'
-import { CliError, validItems, type Commands, type Tally } from '../infra/commands.ts'
+import { isCliError, validItems, type Commands, type Tally } from '../infra/commands.ts'
 import { isSystemNote, IssueSchema, MrSchema, NoteSchema, notePlace, pipelineClass, type GitlabIssue, type GitlabMr, type GitlabNote } from './gitlab-trigger.ts'
 import type { ContextMessage, ThreadContext } from './kind.ts'
 
@@ -64,7 +64,7 @@ export async function pipelineSnapshot(commands: Commands, project: string, ref:
     const latest = await commands.gitlabApi(z.looseObject({ id: z.number(), sha: z.string() }), `projects/${enc}/pipelines/latest?ref=${encodeURIComponent(ref)}`)
     return { head: latest.sha, checks: await pipelineJobs(commands, enc, latest.id, tally) }
   } catch (error) {
-    if (error instanceof CliError && (error.code === 403 || error.code === 404)) return { head: '', checks: [] }
+    if (isCliError(error) && (error.code === 403 || error.code === 404)) return { head: '', checks: [] }
     throw error
   }
 }
