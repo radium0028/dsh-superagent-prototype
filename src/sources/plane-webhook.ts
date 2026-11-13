@@ -44,6 +44,11 @@ async function readRaw(req: IncomingMessage): Promise<{ status: number } | { raw
 }
 const reply = (res: ServerResponse, status: number, text: string): void => { res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8' }); res.end(text) }
 
+/** One line per delivery attempt, so a rejected or lost request is visible in the startup log. */
+const trace = (what: string, detail: Record<string, unknown>): void => {
+  console.log(`[plane-webhook] ${what} ${JSON.stringify(detail)}`)
+}
+
 export interface WebhookResult { status: number; reason: string }
 /**
  * One delivery: verify, then hand the parsed payload to `route` with the delivery headers.
@@ -52,20 +57,25 @@ export interface WebhookResult { status: number; reason: string }
 export async function planeWebhook(req: IncomingMessage, res: ServerResponse, secret: string,
   route: (payload: unknown, eventId: string) => Promise<WebhookResult>): Promise<void> {
   const body = await readRaw(req)
-  if ('status' in body) { reply(res, body.status, 'Request body too large'); return }
-  if (!planeSignatureValid(secret, body.raw, req.headers['x-plane-signature'] as string | undefined)) {
+  if ('status' in body) { trace('refused', { reason: 'too_large', limit: MAX_BODY_BYTES }); reply(res, body.status, 'Request body too large'); return }
+  const signature = req.headers['x-plane-signature'] as string | undefined
+  if (!planeSignatureValid(secret, body.raw, signature)) {
+    trace('refused', { reason: 'signature', signature: signature ? `${signature.slice(0, 12)}…` : 'missing',
+      bytes: body.raw.length, secretConfigured: !!secret })
     reply(res, 403, 'Invalid signature'); return
   }
   let payload: unknown
   try { payload = JSON.parse(body.raw.toString('utf8')) }
-  catch { reply(res, 400, 'The request body is not JSON'); return }
+  catch { trace('refused', { reason: 'not_json', bytes: body.raw.length }); reply(res, 400, 'The request body is not JSON'); return }
   const eventId = z.looseObject({ event_id: z.string().min(1) }).safeParse(payload)
-  if (!eventId.success) { reply(res, 400, 'Missing event_id'); return }
+  if (!eventId.success) { trace('refused', { reason: 'no_event_id' }); reply(res, 400, 'Missing event_id'); return }
   try {
     const result = await route(payload, eventId.data.event_id)
+    trace('delivered', { eventId: eventId.data.event_id, status: result.status, reason: result.reason })
     reply(res, result.status, result.reason)
   } catch (error) {
     // Only a storage failure asks Plane to retry; anything else already answered 2xx inside `route`.
+    trace('failed', { eventId: eventId.data.event_id, error: error instanceof Error ? error.message : String(error) })
     reply(res, 500, `Failed to store the trigger: ${error instanceof Error ? error.message : String(error)}`)
   }
 }
