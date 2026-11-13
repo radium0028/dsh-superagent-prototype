@@ -163,7 +163,7 @@ describe('gitlab source', () => {
     // Issues and merge requests number in separate sequences across many projects, so a bare number is ambiguous.
     expect(gitlabKind.find!('12')).toEqual({ threads: [], terms: [] })
   })
-  it('lists each project\'s issues and merge requests since its cursor, takes in new ones, and skips its own', async () => {
+  it('lists each project\'s issues and merge requests since its cursor, takes in new ones, and reads its own items\' notes', async () => {
     const h = host({}, { enabled: true, config: { observeIssues: true, observeMrs: true } })
     h.store.set(KV.gitlab.since('group/proj'), { issues: SINCE, mrs: SINCE })
     const agents = { author: { id: 9, username: 'glab-bot' } }
@@ -172,24 +172,29 @@ describe('gitlab source', () => {
       [`projects/${ENC}/merge_requests`]: [mr(7, { merge_when_pipeline_succeeds: true, updated_at: at(5) })],
       [`projects/acme%2Fwatched/issues`]: [], [`projects/acme%2Fwatched/merge_requests`]: [],
       [`projects/${ENC}/issues/3/notes`]: [], [`projects/${ENC}/issues/5/notes`]: [],
+      // The agent's own item brings no item trigger, but a person's note under it is a trigger like any other.
+      [`projects/${ENC}/issues/4/notes`]: [note(40, 'carol', at(3))],
       [`projects/${ENC}/merge_requests/7/discussions`]: [], [`projects/${ENC}/merge_requests/7/notes`]: [],
     }
     const reads = gitlab(h, routes)
     await pollRound(h)
     const taken = h.receive.mock.calls.map(([trigger]) => trigger)
-    // #3 is new and addresses the agent; #4 is the agent's own; #5 only changed, so it brings no description; #7 is a new MR.
-    expect(taken.map(trigger => [trigger.meta.kind, trigger.meta.iid, trigger.addressed])).toEqual([['issue', 3, 'mention'], ['mr', 7, undefined]])
+    // #3 is new and addresses the agent; #4 is the agent's own, so only its note arrives; #5 only changed;
+    // #7 is a new MR.
+    expect(taken.map(trigger => [trigger.meta.kind, trigger.meta.iid, trigger.addressed])).toEqual(
+      [['issue', 3, 'mention'], ['issue', 4, undefined], ['mr', 7, undefined]])
+    expect(taken.find(trigger => trigger.meta.iid === 4)).toMatchObject({ meta: { noteId: 40 }, actor: { id: 'carol' }, human: true })
     expect(taken.find(trigger => trigger.meta.iid === 3)).toMatchObject({ id: key('gitlab-issue', '503'), url: `${HOSTED}/group/proj/-/issues/3`,
       channel: { source: 'gitlab', thread: 'gitlab:group/proj#3', address: { project: 'group/proj', iid: '3', kind: 'issue' } } })
     // The cursors moved to five seconds before the newest item of each stream, and each read item got its own checkpoint.
     const cursors = h.store.get<{ issues: string; mrs: string }>(KV.gitlab.since('group/proj'))!
     expect(cursors.issues).toBe(new Date(Date.parse(at(4)) - 5000).toISOString())
     expect(cursors.mrs).toBe(new Date(Date.parse(at(5)) - 5000).toISOString())
-    // Each read item's checkpoint moved past what the stream read before, and the agent's own item got none.
+    // Each read item's checkpoint moved past what the stream read before, the agent's own included.
     expect(Date.parse(h.store.get<string>(KV.gitlab.cursor('group/proj', 'issue', 3))!)).toBeGreaterThan(Date.parse(at(4)))
+    expect(Date.parse(h.store.get<string>(KV.gitlab.cursor('group/proj', 'issue', 4))!)).toBeGreaterThan(Date.parse(at(4)))
     expect(Date.parse(h.store.get<string>(KV.gitlab.cursor('group/proj', 'issue', 5))!)).toBeGreaterThan(Date.parse(at(4)))
     expect(Date.parse(h.store.get<string>(KV.gitlab.cursor('group/proj', 'mr', 7))!)).toBeGreaterThan(Date.parse(at(5)))
-    expect(h.store.get(KV.gitlab.cursor('group/proj', 'issue', 4))).toBeUndefined()
     // The threads are named by their project path, iid, and title.
     expect(h.store.threads.get('gitlab:group/proj#3')!.meta).toMatchObject({ title: 'Issue 3', label: 'group/proj#3 Issue 3',
       facts: { number: { value: 'group/proj#3' } } })

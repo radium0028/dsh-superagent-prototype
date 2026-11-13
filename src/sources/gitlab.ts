@@ -236,10 +236,11 @@ async function pollProject(ctx: SourceContext, round: Round, project: string, co
       // Stopping mid-stream aborts before advancing the cursor so unread items are retried.
       if (stopped(ctx, round)) throw new Error('The GitLab Source stopped during the poll')
       newest = Math.max(newest, Date.parse(item.updated_at))
-      if (sameName(item.author.username, login)) continue
       const kind = stream.kindId
-      // An item opened by someone else since the cursor brings its title and description; an older one only changed.
-      if (Date.parse(item.created_at) >= Date.parse(since)) {
+      // An item opened by someone else since the cursor brings its title and description; the agent's own does not.
+      // Its notes are still read — a person's note on the agent's own item is a trigger like any other, and the
+      // item may have no subscribed Thread for the thread poll to have read it.
+      if (Date.parse(item.created_at) >= Date.parse(since) && !sameName(item.author.username, login)) {
         await ctx.receive(stream.kind === 'mrs' ? mrTrigger(item as GitlabMr, login, project) : issueTrigger(item, login, project))
       }
       await intakeNotes(ctx, { project, iid: item.iid, isMr: stream.kind === 'mrs' },
