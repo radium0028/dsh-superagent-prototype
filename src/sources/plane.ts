@@ -48,7 +48,9 @@ const planeBase = (config: PlaneConfig): string => config.baseUrl || process.env
  * tools service — kind callbacks only receive the CLI commands port, so the factory bridges the two. `settings`
  * supplies the live configuration for values the kind computes (link host, workspace slug); tests omit it.
  */
-export interface PlaneKindDeps { mcp: () => PlaneMcp; settings?: () => PlaneConfig }
+export interface PlaneKindDeps { mcp: () => PlaneMcp; settings?: () => PlaneConfig;
+  /** Observes each roster refresh (startup probe and the panel's Sync now) so health reflects the outcome. */
+  onRefresh?: (outcome: { ok: boolean; detail: string }) => void }
 /** The receiving-scope rule, shared by the kind's `scope` and its Channel's `allowed`. */
 const planeScope = (input: { meta: Record<string, unknown> }, config: PlaneConfig): ScopeResult => {
   const projectId = String(input.meta.projectId ?? '')
@@ -64,7 +66,16 @@ export function planeKind(deps: PlaneKindDeps): SourceKind<PlaneConfig> {
     title: { zh: 'Plane', en: 'Plane' },
     description: { zh: '接收 Plane 工作项的新评论，在工作项的讨论串里回复；Plane 的读写都经 MCP 服务器。', en: 'Receives new comments on Plane work items and replies in their threads; all Plane reads and writes go through the MCP server.' },
     schema: PlaneConfigSchema,
-    refreshLabels: (host, signal) => refreshPlaneNames(sourceContext(host, { kind: 'plane', health: ['plane'] }), deps.mcp(), signal),
+    refreshLabels: async (host, signal) => {
+      try {
+        const names = await refreshPlaneNames(sourceContext(host, { kind: 'plane', health: ['plane'] }), deps.mcp(), signal)
+        deps.onRefresh?.({ ok: true, detail: 'Plane MCP connected' })
+        return names
+      } catch (error) {
+        deps.onRefresh?.({ ok: false, detail: `Plane MCP unavailable: ${error instanceof Error ? error.message : String(error)}` })
+        throw error
+      }
+    },
     fields: [
       { key: 'secret', type: 'text', pattern: '^plane_wh_[A-Za-z0-9]+$', label: { zh: 'webhook 密钥', en: 'Webhook secret' },
         hint: { zh: 'plane_wh_…，创建 webhook 时以 CSV 下载；改动它触发 dsh-superagent 重启。', en: 'plane_wh_…, downloaded as CSV when the webhook is created; changing it restarts dsh-superagent.' } },
@@ -155,7 +166,8 @@ export interface PlaneApplyDeps { start?: typeof startPlaneWebhook }
 export function apply(ctx: Context, deps: PlaneApplyDeps = {}): void {
   const start = deps.start ?? startPlaneWebhook
   const mcp = () => planeMcp(ctx.tools, planeSettings(ctx.orchestrator.sources).mcpServer)
-  const kind = planeKind({ mcp, settings: () => planeSettings(ctx.orchestrator.sources) })
+  const kind = planeKind({ mcp, settings: () => planeSettings(ctx.orchestrator.sources),
+    onRefresh: ({ ok, detail }) => { probe.state = ok ? 'ready' : 'error'; probe.detail = detail; publish() } })
   ctx.effect(() => ctx.orchestrator.sources.register(kind), 'plane: source kind')
   const context = sourceContext(ctx.orchestrator, kind)
 
@@ -200,37 +212,25 @@ export function apply(ctx: Context, deps: PlaneApplyDeps = {}): void {
     })
     return async () => { controller.abort(); await running }
   }, 'plane: webhook receiver')
-  // The member-name refresh doubles as the MCP health probe: a minute like Feishu's chat-name loop, and the stored
-  // names stay until a later read succeeds. A down MCP server turns the Source's health entry to error; repeated
-  // failures back off (Plane rate-limits the member list, so hammering it only prolongs the 429s).
+  // Startup probe: one bounded attempt series (Plane rate-limits the member list, so no permanent polling — the
+  // panel's Sync now button re-runs the refresh on demand). Success also caches the agent's own Plane user id.
   ctx.effect(() => {
     const controller = new AbortController()
     const running = (async () => {
       await context.ready
-      let failures = 0
-      while (!controller.signal.aborted) {
-        if (context.config<PlaneConfig>('plane')) {
-          if (!self.id) {
-            try { const me = await mcp().me(); if (me?.id) { self.id = me.id; context.state.set(KV.plane.self, me.id) } }
-            catch { /* the probe's own report below covers a down MCP server */ }
-          }
-          try {
-            await refreshPlaneNames(context, mcp(), controller.signal)
-            failures = 0
-            probe.state = 'ready'; probe.detail = 'Plane MCP connected'
-          } catch (error) {
-            failures += 1
-            probe.state = 'error'; probe.detail = `Plane MCP unavailable: ${error instanceof Error ? error.message : String(error)}`
-          }
-        } else {
-          failures = 0
-          probe.state = 'paused'; probe.detail = 'Off'
+      const pause = (ms: number): Promise<void> => new Promise(done => { const timer = setTimeout(done, ms); controller.signal.addEventListener('abort', () => { clearTimeout(timer); done() }, { once: true }) })
+      for (let attempt = 1; attempt <= 3 && !controller.signal.aborted; attempt++) {
+        try {
+          if (!self.id) { const me = await mcp().me(); if (me?.id) { self.id = me.id; context.state.set(KV.plane.self, me.id) } }
+          await refreshPlaneNames(context, mcp(), controller.signal)
+          probe.state = 'ready'; probe.detail = 'Plane MCP connected'; publish(); return
+        } catch (error) {
+          probe.state = 'error'; probe.detail = `Plane MCP unavailable: ${error instanceof Error ? error.message : String(error)}`; publish()
+          if (attempt < 3) await pause(30_000)
         }
-        publish()
-        const waitMs = Math.min(60_000 * Math.max(failures, 1), 600_000)
-        await new Promise<void>(resolve => { const timer = setTimeout(resolve, waitMs); controller.signal.addEventListener('abort', () => { clearTimeout(timer); resolve() }, { once: true }) })
       }
+      if (!controller.signal.aborted) { probe.state = 'paused'; probe.detail = 'Member names not refreshed; use Sync now on the Source page'; publish() }
     })()
     return async () => { controller.abort(); await running.catch(() => {}) }
-  }, 'plane: member names and MCP health')
+  }, 'plane: startup probe')
 }
