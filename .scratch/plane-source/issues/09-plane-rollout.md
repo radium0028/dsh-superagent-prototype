@@ -33,3 +33,10 @@
   （`[common]`…），INI 解析器静默忽略该段，代理从未注册。已改写为 INI `[plane-webhook]`（备份 /tmp/frpc.toml.bak，
   `frpc verify` 通过），运维重启 frpc 后经 dsj5-tunnel ssh 转发实测：dsj5 回环 13082 → frp → 本机 3090 →
   接收端回 `HTTP 403 Invalid signature`（未签名请求被正确拒绝）。入站链路只剩 dsj5 nginx 的 /plane-hook 反代。
+
+- 2026-11-13 晚 端到端闭环完成。三重隐性障碍依次修复：①密钥未配（403）；②部署实例是 pre-v2 方言
+  （event=issue_comment+action，data 即评论对象，commit 3ae6393）；③v1 载荷无 event_id 字段（用 data.id 兜底，
+  4b15a09 前一提交）。接收端加了逐请求 trace（签名 403 从此可见）。真实验证：用户评论 → delivered{stored} →
+  Trigger 落库 → 评估经 MCP 读到工作项上下文 → 按策略正确忽略测试评论（decision reason 引用了工作项内容）。
+  待真实工作请求（匹配 copy/visual 规则的评论）验证 工单+回评 最后一环；member list 接口限流较紧（名单显示
+  用 UUID 兜底），稍后再 Sync。启动竞态误报 planeMcpUnavailable 已修（resolvePlane 轮询 5s）。
