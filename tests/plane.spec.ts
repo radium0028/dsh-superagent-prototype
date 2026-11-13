@@ -69,7 +69,9 @@ const mcpStub = {
       const call = { tool: short, args: args as Record<string, unknown> }
       mcpCalls.push(call)
       const result = mcpResults.get(short)
-      return result instanceof Error ? { isError: true, error: { message: result.message } } : { isError: false, value: result ?? {} }
+      // The harness executor throws on an MCP isError result and returns the canonical envelope otherwise.
+      if (result instanceof Error) throw result
+      return { content: [{ type: 'text', text: JSON.stringify(result ?? {}) }], structuredContent: result ?? {} }
     } }
   },
 }

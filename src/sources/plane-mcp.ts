@@ -73,20 +73,38 @@ const timestamp = (value: string | null | undefined): string => {
   return Number.isFinite(time) ? new Date(time).toISOString() : new Date(0).toISOString()
 }
 
+/** The JSON payload of an MCP text content block; `undefined` when the server sent none. */
+const contentValue = (content: unknown): unknown => {
+  if (!Array.isArray(content)) return undefined
+  for (const block of content) {
+    if (block && typeof block === 'object' && (block as { type?: unknown }).type === 'text'
+      && typeof (block as { text?: unknown }).text === 'string') {
+      try { return JSON.parse((block as { text: string }).text) } catch { return (block as { text: string }).text }
+    }
+  }
+  return undefined
+}
+
 /**
  * Adapts the harness tools service to Plane reads and writes. The constructor takes the tools service directly (the
  * plugin entry passes `ctx.tools`) so kind callbacks that only receive the CLI commands port still reach MCP through
  * the closures this factory builds.
+ *
+ * The harness `ToolDefinition.execute` returns the canonical `{ content, structuredContent? }` envelope and **throws**
+ * on an MCP `isError` result — there is no error field to inspect. The Plane payload sits in `structuredContent` when
+ * the server provides one, otherwise in the first text content block as JSON.
  */
 export function planeMcp(tools: ToolsLike, server = 'plane') {
   const tool = (name: string): string => `mcp__${server}__${name}`
   const call = async <T>(name: string, args: Record<string, unknown>, schema: z.ZodType<T>): Promise<T> => {
     const definition = tools.get(tool(name))
     if (!definition) throw new PlaneMcpUnavailable(tool(name))
-    const exec = { signal: new AbortController().signal }
-    const result = await definition.execute(args, exec) as { isError?: boolean; value?: unknown; error?: { message?: string } }
-    if (result?.isError) throw new Error(`Plane MCP ${name} failed: ${result.error?.message ?? 'unknown error'}`)
-    return schema.parse(result?.value)
+    let result: { content?: unknown; structuredContent?: unknown }
+    try { result = await definition.execute(args, { signal: new AbortController().signal }) as typeof result }
+    catch (error) { throw new Error(`Plane MCP ${name} failed: ${error instanceof Error ? error.message : String(error)}`) }
+    const payload = result?.structuredContent ?? contentValue(result?.content)
+    if (payload === undefined) throw new Error(`Plane MCP ${name} returned no parsable content`)
+    return schema.parse(payload)
   }
   return {
     /** Whether the MCP server is connected (its first tool is registered). */
