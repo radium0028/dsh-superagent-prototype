@@ -24,4 +24,7 @@
   - 冒烟：向 3090 POST 签名载荷 → 202 stored → store.sqlite 的 trigger/trigger_thread 表出现正确的 plane Trigger
     （thread `plane:<project>:<workitem>`、actor UUID、human=1；projects 未配置故按 filtered 语义不开工单）；
   - 遗留：Plane 侧按 token 限流（429 RATE_LIMIT_EXCEEDED），当天探测过多所致，成员名单待窗口冷却后面板 Sync now 补拉；
-  - 待运维：frpc 加 12089→3090 映射、dsj5 nginx 加 /plane-hook 反代、Plane 建 webhook 拿密钥、Source 配置填 secret。
+  - 待运维：frpc 加 13082→3090 映射、dsj5 nginx 加 /plane-hook 反代、Plane 建 webhook 拿密钥、Source 配置填 secret。
+
+- 2026-11-13 补充：frpc 已由运维配置并重载——remote_port 用 **13082**（12089 段内冲突），local_port 仍 3090。
+  dsj5 nginx 的反代目标相应改为 `http://127.0.0.1:13082/plane/webhook`，文档 009 已同步。

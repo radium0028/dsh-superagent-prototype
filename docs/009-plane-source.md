@@ -230,18 +230,18 @@ frpc 从本机连它，不需要对局域网暴露），与 DSH 的 web server �
 
 Payload URL 有两种给法，任选其一：
 
-1. **直连公网 IP + 端口**：`http://<dsj5-公网IP>:12089/plane/webhook`。需要在 dsj5 安全组放行 12089，并验证
-   dsj5 到自身公网 IP 的回环（在 dsj5 上 `curl -v http://<公网IP>:12089/` 测试；云厂商 EIP 是网关 NAT，
+1. **直连公网 IP + 端口**：`http://<dsj5-公网IP>:13082/plane/webhook`。需要在 dsj5 安全组放行 13082，并验证
+   dsj5 到自身公网 IP 的回环（在 dsj5 上 `curl -v http://<公网IP>:13082/` 测试；云厂商 EIP 是网关 NAT，
    回环不一定通）。
 2. **复用 plane.syqbshop.com 的 nginx（推荐）**：dsj5 的 nginx 加一条 location 反代到本机 frp 端口：
 
    ```nginx
    location = /plane-hook {
-       proxy_pass http://127.0.0.1:12089/plane/webhook;
+       proxy_pass http://127.0.0.1:13082/plane/webhook;
    }
    ```
 
-   Payload URL 就是 `https://plane.syqbshop.com/plane-hook`。好处：全程 HTTPS、不动安全组（12089 不对外放行，
+   Payload URL 就是 `https://plane.syqbshop.com/plane-hook`。好处：全程 HTTPS、不动安全组（13082 不对外放行，
    frps 仍绑在 0.0.0.0 但外部进不来）、规避回环问题（Plane 容器 → 本机 nginx → 本机 frp 端口，不出公网）。
 
 ### 触发判定
@@ -382,7 +382,7 @@ Plane 实例地址、workspace slug 和 API key **不在这里**：它们属于 
 2. **让 superagent 进程也加载 MCP 连接器。** 连接记录本身是全局的，但每个 DSH 进程各自拉起 MCP 子进程，需要确认
    superagent profile 里 MCP 连接器插件已启用。
 3. **frp 加一条 TCP 端口映射**（改局域网机器上的 frpc 配置）。选 12080-14089 里一个没被占用的端口，比如
-   `12089`，映射到接收端的监听端口：
+   `13082`，映射到接收端的监听端口：
 
    ```toml
    # frpc.toml（新版 frp）
@@ -391,7 +391,7 @@ Plane 实例地址、workspace slug 和 API key **不在这里**：它们属于 
    type = "tcp"
    localIP = "127.0.0.1"
    localPort = 3090
-   remotePort = 12089
+   remotePort = 13082
    ```
 
    ```ini
@@ -400,7 +400,7 @@ Plane 实例地址、workspace slug 和 API key **不在这里**：它们属于 
    type = tcp
    local_ip = 127.0.0.1
    local_port = 3090
-   remote_port = 12089
+   remote_port = 13082
    ```
 
    改完重载/重启 frpc。注意 frp 映射的是整个端口而不是路径，所以接收端用独立监听（3090），**不要**映射 3082
@@ -408,10 +408,10 @@ Plane 实例地址、workspace slug 和 API key **不在这里**：它们属于 
 
 4. **在 Plane 建 webhook**。Workspace settings → Webhooks → Add webhook：
    - **Payload URL** 二选一：
-     - 直连：`http://<dsj5-公网IP>:12089/plane/webhook`（需在 dsj5 安全组放行 12089，并先验证 dsj5 到自身
+     - 直连：`http://<dsj5-公网IP>:13082/plane/webhook`（需在 dsj5 安全组放行 13082，并先验证 dsj5 到自身
        公网 IP 的回环是否通）；
      - 走 nginx（推荐）：在 dsj5 服务 plane.syqbshop.com 的 nginx 上加 `location = /plane-hook`，反代到
-       `http://127.0.0.1:12089/plane/webhook`，Payload URL 填 `https://plane.syqbshop.com/plane-hook`
+       `http://127.0.0.1:13082/plane/webhook`，Payload URL 填 `https://plane.syqbshop.com/plane-hook`
        （不动安全组、全程 HTTPS、规避回环问题）。
    - 勾选 `workitem.comment.created`（需要"新建工作项也开 Ticket"时加勾 `workitem.created`）；
    - 保存后下载密钥 CSV（`plane_wh_…`），填进 `source:plane.secret`。
@@ -436,7 +436,7 @@ Plane 实例地址、workspace slug 和 API key **不在这里**：它们属于 
 
 1. **网络路线：frp TCP 端口映射 + 插件内独立监听。** Plane 在华为云主机 dsj5 上，superagent 在局域网机器上，两台
    机器之间已有 frp 隧道（远端端口范围 12080-14089）。接收端由插件在 `127.0.0.1:3090` 独立监听，frpc 把 dsj5 的
-   12089 映射到它。frp 映射的是端口而非路径，映射 3082 会把整个管理面板暴露，所以不用方案 A。
+   13082 映射到它。frp 映射的是端口而非路径，映射 3082 会把整个管理面板暴露，所以不用方案 A。
    （原先记的"A 反向代理"适用于 superagent 机器上直接跑 nginx 的部署，本环境不适用；A 仍保留为非 frp 部署的备选。）
 2. **触发规则：规则 1。** 受监听项目里，名单内成员的评论即明确请求。
 3. **Plane 部署形态：自建、带公网域名。**
@@ -463,7 +463,7 @@ Plane 实例地址、workspace slug 和 API key **不在这里**：它们属于 
 
 - 把 `uvx` 放到 DSH 能找到的位置（或把 MCP 连接的 `command` 改成绝对路径）——这是用 MCP 的前置条件。
 - webhook 密钥 `plane_wh_…`，创建 webhook 时以 CSV 下载。
-- frp 映射用的那个 dsj5 端口（如 12089）和最终 Payload URL（`http://<dsj5-公网IP>:12089/plane/webhook` 或
+- frp 映射用的那个 dsj5 端口（如 13082）和最终 Payload URL（`http://<dsj5-公网IP>:13082/plane/webhook` 或
   `https://plane.syqbshop.com/plane-hook`），填到 **Workspace settings → Webhooks** 里的 Payload URL。
 - 需要监听的项目 id，以及可以发起工作的 Plane 用户 id（可用 MCP 的 `member` action=`list_workspace` 取）。
 - API key 已经在 MCP 连接里，不需要另外提供。

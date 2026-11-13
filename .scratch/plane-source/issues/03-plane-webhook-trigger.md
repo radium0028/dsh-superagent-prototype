@@ -17,7 +17,7 @@
 - [x] 测试覆盖：验签矩阵、事件映射、去重、范围过滤、智能体自己的评论被丢弃
 ## Comments
 
-- 2026-11-13：接收端从方案 A 改为方案 B（commit b45f99c）。原因：实际部署走 frp 端口映射（dsj5:12089 → 本机
+- 2026-11-13：接收端从方案 A 改为方案 B（commit b45f99c）。原因：实际部署走 frp 端口映射（dsj5:13082 → 本机
   127.0.0.1:3090），frp 映射整个端口而非路径，挂 webServer 会把 3082 管理面板一起暴露。watch 循环 5 秒重读绑定
   目标，改 host/port 自动重绑；绑定失败报 error 并在下一 tick 重试；Source 关闭时停监听。新增配置
   webhookHost/webhookPort（默认 127.0.0.1:3090）。附带修复：self 身份（API key 所有者）缓存进 KV.plane.self，
