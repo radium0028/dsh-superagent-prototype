@@ -90,13 +90,13 @@ export interface PlaneTriggerOptions {
   mentionUser?: string
 }
 /**
- * True when the comment's markup mentions the given Plane user. Plane's editor serializes a mention as an element
- * carrying the member's id (`data-mention-id` in current versions); the exact attribute is matched permissively so an
- * editor upgrade keeps the check working until the real markup is confirmed against the deployed instance.
+ * True when the comment's markup mentions the given Plane user. The deployed editor serializes a mention as a
+ * `<mention-component entity_identifier="<user uuid>" entity_name="user_mention">` element (confirmed against the
+ * instance); newer editors use `data-mention-id`, so both attributes are accepted.
  */
 export function planeMentions(comment: { comment_html?: string | null }, userId: string): boolean {
   if (!userId) return false
-  return new RegExp(`data-(?:mention-)?id="${userId}"`, 'i').test(comment.comment_html ?? '')
+  return new RegExp(`(?:entity_identifier|data-(?:mention-)?id)="${userId}"`, 'i').test(comment.comment_html ?? '')
 }
 
 /** The dotted form of an event name, from the dotted, Python-enum, or v1 (`issue_comment` + `action`) forms. */

@@ -191,10 +191,14 @@ describe('plane webhook', () => {
   })
   it('with a mention user, only a comment whose markup mentions that user is addressed (rule 3)', () => {
     const BOT = '718e1e32-1b0f-42b4-bf3c-7daa2efe492d'
+    // The deployed editor's serialization: a mention-component element with the user id in entity_identifier.
     const withMention = v1CommentEvent({ data: { ...v1CommentEvent().data as Record<string, unknown>,
-      comment_html: '<p class="editor-paragraph-block">@<span class="mention" data-mention-id="' + BOT + '" data-mention-label="@DevelopBot">DevelopBot</span> 帮我改一下文案</p>' } })
+      comment_html: '<p class="editor-paragraph-block"><mention-component id="040af2c5-0184-4d8b-bc4c-ca9edfb0c1a0" entity_identifier="' + BOT + '" entity_name="user_mention"></mention-component> 帮我改一下文案</p>' } })
     const hit = planeTrigger(withMention, SELF, { mentionUser: BOT })
-    expect(hit).toMatchObject({ addressed: 'mention', text: '@DevelopBot 帮我改一下文案', meta: { mentioned: true } })
+    expect(hit).toMatchObject({ addressed: 'mention', text: '帮我改一下文案', meta: { mentioned: true } })
+    const newerEditor = v1CommentEvent({ data: { ...v1CommentEvent().data as Record<string, unknown>,
+      comment_html: '<p>@<span class="mention" data-mention-id="' + BOT + '" data-mention-label="@DevelopBot">DevelopBot</span> 改文案</p>' } })
+    expect(planeTrigger(newerEditor, SELF, { mentionUser: BOT })).toMatchObject({ addressed: 'mention' })
     const plain = planeTrigger(v1CommentEvent(), SELF, { mentionUser: BOT })
     expect(plain?.addressed).toBeUndefined()
     expect(plain).toMatchObject({ meta: { mentioned: false }, actor: { id: MEMBER } })
