@@ -22,6 +22,8 @@ export { planeWebhook, planeSignatureValid, startPlaneWebhook, watchPlaneWebhook
 
 const PlaneConfigSchema = PlaneAccountsSchema.extend({
   mcpServer: z.string().trim().regex(/^[a-z][a-z0-9_-]*$/, 'lowercase namespace').default('plane'),
+  /** When set, only a comment @-mentioning this Plane user is an explicit request (rule 3); empty keeps rule 1. */
+  mentionUser: z.string().regex(/^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/i, 'User UUID or empty').default(''),
   webhookHost: z.string().trim().regex(/^[A-Za-z0-9]([A-Za-z0-9.-]*)$/, 'host or IP literal').default('127.0.0.1'),
   webhookPort: z.number().int().min(1).max(65535).default(3090),
   baseUrl: z.union([z.literal(''), z.string().trim().url()]).default(''),
@@ -79,6 +81,8 @@ export function planeKind(deps: PlaneKindDeps): SourceKind<PlaneConfig> {
     fields: [
       { key: 'secret', type: 'text', pattern: '^plane_wh_[A-Za-z0-9]+$', label: { zh: 'webhook 密钥', en: 'Webhook secret' },
         hint: { zh: 'plane_wh_…，创建 webhook 时以 CSV 下载；改动它触发 dsh-superagent 重启。', en: 'plane_wh_…, downloaded as CSV when the webhook is created; changing it restarts dsh-superagent.' } },
+      { key: 'mentionUser', type: 'text', pattern: '^([0-9a-f-]{36})?$', label: { zh: '提及触发的用户', en: 'Mention-trigger user' },
+        hint: { zh: '填 Plane 用户 UUID（如机器人账号 DevelopBot）：只有评论里 @ 该用户的评论才算明确请求（规则 3，@ 标记从评论 HTML 识别）。留空则名单内成员的任意评论都算明确请求（规则 1）。', en: 'A Plane user UUID (a bot account such as DevelopBot): only comments @-mentioning that user are explicit requests (rule 3, recognized in the comment HTML). Empty keeps rule 1, where any comment by a listed member is an explicit request.' } },
       { key: 'webhookHost', type: 'text', pattern: '[A-Za-z0-9.-]+', label: { zh: '接收端监听地址', en: 'Receiver bind address' },
         hint: { zh: 'Plane Source 自己监听的地址（不是 DSH 的 web server）；frpc 从本机连它，保持 127.0.0.1 即可。改动 5 秒内自动重绑，不需要重启。', en: 'The address the Plane receiver itself binds (not the DSH web server); frpc connects from this host, so loopback is enough. A change rebinds within 5 s, without a restart.' } },
       { key: 'webhookPort', type: 'number', min: 1, max: 65535, label: { zh: '接收端监听端口', en: 'Receiver bind port' },
@@ -197,8 +201,8 @@ export function apply(ctx: Context, deps: PlaneApplyDeps = {}): void {
         await planeWebhook(req, res, planeSettings(ctx.orchestrator.sources).secret, async (payload, eventId) => {
           const settings = planeSettings(ctx.orchestrator.sources)
           const trigger = settings.workItemCreated
-            ? planeTrigger(payload, self.id) ?? workItemTrigger(payload, self.id)
-            : planeTrigger(payload, self.id)
+            ? planeTrigger(payload, self.id, { mentionUser: settings.mentionUser || undefined }) ?? workItemTrigger(payload, self.id)
+            : planeTrigger(payload, self.id, { mentionUser: settings.mentionUser || undefined })
           if (!trigger || trigger.id !== planeTriggerId(eventId)) {
             // A dialect the translator does not know must be visible, not a silent 202.
             const seen = payload as { event?: unknown; action?: unknown; data?: unknown }

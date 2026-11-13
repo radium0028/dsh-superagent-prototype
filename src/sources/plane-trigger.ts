@@ -80,6 +80,25 @@ export function planeText(comment: { comment_stripped?: string | null; comment_h
     .trim()
 }
 
+export interface PlaneTriggerOptions {
+  /**
+   * When set, only a comment whose markup mentions this Plane user counts as addressed (rule 3); every other comment
+   * stays unaddressed, so it can at most become an inferred candidate under `listen: all`. The webhook payload carries
+   * no mention list, so the mention is recognized in the comment's HTML. Empty keeps rule 1 (any comment by a listed
+   * member is an explicit request).
+   */
+  mentionUser?: string
+}
+/**
+ * True when the comment's markup mentions the given Plane user. Plane's editor serializes a mention as an element
+ * carrying the member's id (`data-mention-id` in current versions); the exact attribute is matched permissively so an
+ * editor upgrade keeps the check working until the real markup is confirmed against the deployed instance.
+ */
+export function planeMentions(comment: { comment_html?: string | null }, userId: string): boolean {
+  if (!userId) return false
+  return new RegExp(`data-(?:mention-)?id="${userId}"`, 'i').test(comment.comment_html ?? '')
+}
+
 /** The dotted form of an event name, from the dotted, Python-enum, or v1 (`issue_comment` + `action`) forms. */
 export function eventName(raw: string, action?: string): string {
   const dotted = /^workitem\.[a-z_]+(\.[a-z_]+)?$/.exec(raw)
@@ -95,7 +114,7 @@ export function eventName(raw: string, action?: string): string {
   return raw
 }
 /** The agent's own Plane user id is fetched once (`member me`) and cached; its comments never become Triggers. */
-export function planeTrigger(input: unknown, selfId: string | undefined): Trigger | undefined {
+export function planeTrigger(input: unknown, selfId: string | undefined, options: PlaneTriggerOptions = {}): Trigger | undefined {
   const payload = EnvelopeSchema.parse(input)
   const kind = eventName(payload.event, payload.action ?? undefined)
   if (kind !== 'workitem.comment.created') return
@@ -126,11 +145,14 @@ export function planeTrigger(input: unknown, selfId: string | undefined): Trigge
     const ref: PlaneIssueRef = { projectId: comment.project, workItemId: comment.issue }
     const at = comment.created_at && Number.isFinite(Date.parse(comment.created_at))
       ? new Date(Date.parse(comment.created_at)).toISOString() : new Date().toISOString()
+    // Rule 3: with a mention user configured, only a comment @-mentioning that user is addressed; the rest stay
+    // unaddressed (rule 1 applies when no mention user is set).
+    const mentioned = options.mentionUser ? planeMentions(comment, options.mentionUser) : true
     return { id: planeTriggerId(eventId), source: SOURCE, threads: [{ source: SOURCE, id: `plane:${ref.projectId}:${ref.workItemId}` }],
-      actor: { source: SOURCE, id: comment.actor }, human: true, addressed: 'direct',
+      actor: { source: SOURCE, id: comment.actor }, human: true, ...(mentioned ? { addressed: options.mentionUser ? 'mention' as const : 'direct' as const } : {}),
       at, text: planeText(comment),
       channel: planeChannel(ref, comment.id),
-      meta: { eventId, kind, projectId: ref.projectId, workItemId: ref.workItemId, commentId: comment.id,
+      meta: { eventId, kind, projectId: ref.projectId, workItemId: ref.workItemId, commentId: comment.id, mentioned,
         workItemName: '', workspaceId: v1.data.workspace_id ?? '', entityType: v1.data.entity_type ?? 'issue_comment' } }
   }
   return

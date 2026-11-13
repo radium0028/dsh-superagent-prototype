@@ -189,6 +189,18 @@ describe('plane webhook', () => {
     expect(h.receive).toHaveBeenCalledTimes(1)
     expect(h.receive.mock.calls[0]![0]).toMatchObject({ id: key('plane', 'cm-v1'), text: '请修一下' })
   })
+  it('with a mention user, only a comment whose markup mentions that user is addressed (rule 3)', () => {
+    const BOT = '718e1e32-1b0f-42b4-bf3c-7daa2efe492d'
+    const withMention = v1CommentEvent({ data: { ...v1CommentEvent().data as Record<string, unknown>,
+      comment_html: '<p class="editor-paragraph-block">@<span class="mention" data-mention-id="' + BOT + '" data-mention-label="@DevelopBot">DevelopBot</span> 帮我改一下文案</p>' } })
+    const hit = planeTrigger(withMention, SELF, { mentionUser: BOT })
+    expect(hit).toMatchObject({ addressed: 'mention', text: '@DevelopBot 帮我改一下文案', meta: { mentioned: true } })
+    const plain = planeTrigger(v1CommentEvent(), SELF, { mentionUser: BOT })
+    expect(plain?.addressed).toBeUndefined()
+    expect(plain).toMatchObject({ meta: { mentioned: false }, actor: { id: MEMBER } })
+    // Without a mention user the rule-1 behaviour stands: any comment by a listed member is a direct request.
+    expect(planeTrigger(v1CommentEvent(), SELF)).toMatchObject({ addressed: 'direct' })
+  })
   it('drops the agent\'s own comments: no reply loop', async () => {
     const h = host()
     const own = await deliver(h, commentEvent({ data: { id: WORK_ITEM, project_id: PROJECT, name: 'x',
