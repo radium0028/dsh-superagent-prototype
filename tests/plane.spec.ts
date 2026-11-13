@@ -179,6 +179,16 @@ describe('plane webhook', () => {
     await deliver(h, v1CommentEvent({ data: { ...v1CommentEvent().data as Record<string, unknown>, external_source: 'zendesk' } }))
     expect(h.receive).toHaveBeenCalledTimes(1)
   })
+  it('derives the event id from the comment id when the payload carries no event_id', async () => {
+    const h = host()
+    const bare = v1CommentEvent()
+    delete bare.event_id
+    const delivered = await deliver(h, bare)
+    expect(delivered.status).toBe(202)
+    // `deliver` compares against key('plane', eventId) with the envelope's derived id — here the comment's id.
+    expect(h.receive).toHaveBeenCalledTimes(1)
+    expect(h.receive.mock.calls[0]![0]).toMatchObject({ id: key('plane', 'cm-v1'), text: '请修一下' })
+  })
   it('drops the agent\'s own comments: no reply loop', async () => {
     const h = host()
     const own = await deliver(h, commentEvent({ data: { id: WORK_ITEM, project_id: PROJECT, name: 'x',

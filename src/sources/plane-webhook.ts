@@ -67,15 +67,20 @@ export async function planeWebhook(req: IncomingMessage, res: ServerResponse, se
   let payload: unknown
   try { payload = JSON.parse(body.raw.toString('utf8')) }
   catch { trace('refused', { reason: 'not_json', bytes: body.raw.length }); reply(res, 400, 'The request body is not JSON'); return }
-  const eventId = z.looseObject({ event_id: z.string().min(1) }).safeParse(payload)
-  if (!eventId.success) { trace('refused', { reason: 'no_event_id' }); reply(res, 400, 'Missing event_id'); return }
+  // Pre-v2 payloads carry no `event_id`; the entity id in `data.id` identifies the event there.
+  const envelope = z.looseObject({ event_id: z.string().min(1).optional(), data: z.looseObject({ id: z.string().min(1) }).optional() }).safeParse(payload)
+  const eventId = envelope.success ? envelope.data.event_id ?? envelope.data.data?.id : undefined
+  if (!eventId) {
+    trace('refused', { reason: 'no_event_id', body: body.raw.toString('utf8').slice(0, 1200) })
+    reply(res, 400, 'Missing event_id'); return
+  }
   try {
-    const result = await route(payload, eventId.data.event_id)
-    trace('delivered', { eventId: eventId.data.event_id, status: result.status, reason: result.reason })
+    const result = await route(payload, eventId)
+    trace('delivered', { eventId, status: result.status, reason: result.reason })
     reply(res, result.status, result.reason)
   } catch (error) {
     // Only a storage failure asks Plane to retry; anything else already answered 2xx inside `route`.
-    trace('failed', { eventId: eventId.data.event_id, error: error instanceof Error ? error.message : String(error) })
+    trace('failed', { eventId, error: error instanceof Error ? error.message : String(error) })
     reply(res, 500, `Failed to store the trigger: ${error instanceof Error ? error.message : String(error)}`)
   }
 }

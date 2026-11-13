@@ -22,8 +22,8 @@ export const planeChannel = (ref: PlaneIssueRef, commentId: string): ChannelRef 
 /** Deterministic trigger ID from the webhook event id: repeated deliveries of one event produce one Trigger. */
 export const planeTriggerId = (eventId: string): string => key(SOURCE, eventId)
 
-/** The webhook envelope every dialect shares; the receiver already demands `event_id` before parsing reaches here. */
-const EnvelopeSchema = z.looseObject({ event_id: z.string().min(1), event: z.string().min(1), action: z.string().nullish() })
+/** The webhook envelope every dialect shares; pre-v2 payloads carry no `event_id`, so `data.id` stands in for it. */
+const EnvelopeSchema = z.looseObject({ event_id: z.string().min(1).optional(), event: z.string().min(1), action: z.string().nullish() })
 /** v2 payload: `data` holds the work item and a nested `comment` object. */
 const V2CommentSchema = z.looseObject({
   workspace_id: z.string().nullish(),
@@ -102,21 +102,23 @@ export function planeTrigger(input: unknown, selfId: string | undefined): Trigge
 
   const v2 = V2CommentSchema.safeParse(input)
   if (v2.success && v2.data.data.comment) {
+    const eventId = payload.event_id ?? v2.data.data.comment.id
     const comment = v2.data.data.comment
     // The agent's own comments would otherwise loop: every reply arrives as a new comment event.
     if (selfId && comment.actor_id === selfId) return
     const ref: PlaneIssueRef = { projectId: v2.data.data.project_id ?? '', workItemId: v2.data.data.id }
-    return { id: planeTriggerId(payload.event_id), source: SOURCE, threads: [{ source: SOURCE, id: `plane:${ref.projectId}:${ref.workItemId}` }],
+    return { id: planeTriggerId(eventId), source: SOURCE, threads: [{ source: SOURCE, id: `plane:${ref.projectId}:${ref.workItemId}` }],
       actor: { source: SOURCE, id: comment.actor_id }, human: true, addressed: 'direct',
       at: new Date().toISOString(), text: comment.comment_stripped,
       channel: planeChannel(ref, comment.id),
-      meta: { eventId: payload.event_id, kind, projectId: ref.projectId, workItemId: ref.workItemId, commentId: comment.id,
+      meta: { eventId, kind, projectId: ref.projectId, workItemId: ref.workItemId, commentId: comment.id,
         workItemName: v2.data.data.name ?? '', workspaceId: v2.data.workspace_id ?? '', entityType: v2.data.entity_type ?? 'issue' } }
   }
 
   const v1 = V1CommentSchema.safeParse(input)
   if (v1.success) {
     const comment = v1.data.data
+    const eventId = payload.event_id ?? comment.id
     // The agent's own replies carry its `external_source`; that marker guards the reply loop even before the
     // agent's own user id is known (the member probe may still be waiting out an API rate limit).
     if (comment.external_source === 'dsh-superagent') return
@@ -124,11 +126,11 @@ export function planeTrigger(input: unknown, selfId: string | undefined): Trigge
     const ref: PlaneIssueRef = { projectId: comment.project, workItemId: comment.issue }
     const at = comment.created_at && Number.isFinite(Date.parse(comment.created_at))
       ? new Date(Date.parse(comment.created_at)).toISOString() : new Date().toISOString()
-    return { id: planeTriggerId(payload.event_id), source: SOURCE, threads: [{ source: SOURCE, id: `plane:${ref.projectId}:${ref.workItemId}` }],
+    return { id: planeTriggerId(eventId), source: SOURCE, threads: [{ source: SOURCE, id: `plane:${ref.projectId}:${ref.workItemId}` }],
       actor: { source: SOURCE, id: comment.actor }, human: true, addressed: 'direct',
       at, text: planeText(comment),
       channel: planeChannel(ref, comment.id),
-      meta: { eventId: payload.event_id, kind, projectId: ref.projectId, workItemId: ref.workItemId, commentId: comment.id,
+      meta: { eventId, kind, projectId: ref.projectId, workItemId: ref.workItemId, commentId: comment.id,
         workItemName: '', workspaceId: v1.data.workspace_id ?? '', entityType: v1.data.entity_type ?? 'issue_comment' } }
   }
   return
